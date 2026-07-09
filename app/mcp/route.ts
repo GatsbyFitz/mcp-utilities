@@ -17,7 +17,7 @@ const handler = createMcpHandler(
       async ({ message }) => ({
         content: [{ type: "text", text: `Tool echo: ${message}` }],
       })
-    ),
+    );
      server.registerTool(
       "echo2",
       {
