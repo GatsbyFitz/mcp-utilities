@@ -1,8 +1,7 @@
 import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
-import { vectorIndex } from "@/lib/vector";
-import { embed } from "ai";
 
+// StreamableHttp server
 const handler = createMcpHandler(
   async (server) => {
     server.registerTool(
@@ -18,15 +17,14 @@ const handler = createMcpHandler(
         content: [{ type: "text", text: `Tool echo: ${message}` }],
       })
     );
-  
   },
   {},
   {
     basePath: "",
     verboseLogs: true,
-    maxDuration: 800,
+    maxDuration: 60,
     disableSse: true,
   }
 );
 
-export { handler as GET, handler as POST, handler as DELETE }
+export { handler as GET, handler as POST, handler as DELETE };
