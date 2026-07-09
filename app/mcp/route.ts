@@ -19,50 +19,7 @@ const handler = createMcpHandler(
       })
     );
 
-    server.registerTool(
-      "search_docs",
-      {
-        title: "Search Documents",
-        description: "Search the RAG database to answer questions using uploaded documents",
-        inputSchema: z.object({
-          query: z.string().min(1).max(500),
-        }),
-      },
-      async ({ query }) => {
-        try {
-          const { embedding } = await embed({
-            model: "google/gemini-embedding-2",
-            value: query,
-            providerOptions: {
-              google: { outputDimensionality: 1536 },
-            },
-          });
-
-          const results = await vectorIndex.query({
-            vector: embedding,
-            topK: 5,
-            includeMetadata: true,
-          });
-
-          if (results.length === 0) {
-            return { content: [{ type: "text", text: "No relevant documents found." }] };
-          }
-
-          const context = results
-            .map((r, i) => `[${i + 1}] (source: ${(r.metadata as { source: string }).source})\n${(r.metadata as { text: string }).text}`)
-            .join("\n\n");
-
-          return { content: [{ type: "text", text: context }] };
-        } catch (err) {
-          const message = err instanceof Error ? err.message : "Unknown error";
-          console.error("[search_docs] error:", err);
-          return {
-            content: [{ type: "text", text: `Search failed: ${message}` }],
-            isError: true,
-          };
-        }
-      }
-    );
+    
   },
   {},
   {
