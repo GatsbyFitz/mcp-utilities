@@ -5,34 +5,41 @@ import { embed } from "ai";
 
 const handler = createMcpHandler(
   async (server) => {
-    await new Promise(resolve => setTimeout(resolve, 500)); // artificial delay
-
     server.registerTool(
       "echo",
       {
         title: "echo",
         description: "Echo a message",
-        inputSchema: z.object({ message: z.string().min(1).max(100) }),
+        inputSchema: z.object({
+          message: z.string().min(1).max(100),
+        }),
       },
       async ({ message }) => ({
         content: [{ type: "text", text: `Tool echo: ${message}` }],
       })
     );
-
-    server.registerTool(
+     server.registerTool(
       "echo2",
       {
         title: "echo2",
         description: "Echo a message",
-        inputSchema: z.object({ message: z.string().min(1).max(100) }),
+        inputSchema: z.object({
+          message: z.string().min(1).max(100),
+        }),
       },
       async ({ message }) => ({
         content: [{ type: "text", text: `Tool echo: ${message}` }],
       })
     );
+  
   },
   {},
-  { basePath: "", verboseLogs: true, maxDuration: 800, disableSse: true }
+  {
+    basePath: "",
+    verboseLogs: true,
+    maxDuration: 800,
+    redisUrl: process.env.KV_URL,
+  }
 );
 
 export { handler as GET, handler as POST, handler as DELETE };
