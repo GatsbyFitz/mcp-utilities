@@ -1,48 +1,38 @@
 import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
+import { vectorIndex } from "@/lib/vector";
+import { embed } from "ai";
 
 const handler = createMcpHandler(
   async (server) => {
-    try {
-      server.registerTool(
-        "echo",
-        {
-          title: "echo",
-          description: "Echo a message",
-          inputSchema: z.object({
-            message: z.string().min(1).max(100),
-          }),
-        },
-        async ({ message }) => ({
-          content: [{ type: "text", text: `Tool echo: ${message}` }],
-        })
-      );
+    await new Promise(resolve => setTimeout(resolve, 500)); // artificial delay
 
-      server.registerTool(
-        "echo2",
-        {
-          title: "echo2",
-          description: "Echo a message",
-          inputSchema: z.object({
-            message: z.string().min(1).max(100),
-          }),
-        },
-        async ({ message }) => ({
-          content: [{ type: "text", text: `Tool echo: ${message}` }],
-        })
-      );
-    } catch (err) {
-      console.error("[mcp init error]", String(err));
-      throw err;
-    }
+    server.registerTool(
+      "echo",
+      {
+        title: "echo",
+        description: "Echo a message",
+        inputSchema: z.object({ message: z.string().min(1).max(100) }),
+      },
+      async ({ message }) => ({
+        content: [{ type: "text", text: `Tool echo: ${message}` }],
+      })
+    );
+
+    server.registerTool(
+      "echo2",
+      {
+        title: "echo2",
+        description: "Echo a message",
+        inputSchema: z.object({ message: z.string().min(1).max(100) }),
+      },
+      async ({ message }) => ({
+        content: [{ type: "text", text: `Tool echo: ${message}` }],
+      })
+    );
   },
   {},
-  {
-    basePath: "",
-    verboseLogs: true,
-    maxDuration: 800,
-    disableSse: true,
-  }
+  { basePath: "", verboseLogs: true, maxDuration: 800, disableSse: true }
 );
 
 export { handler as GET, handler as POST, handler as DELETE };
