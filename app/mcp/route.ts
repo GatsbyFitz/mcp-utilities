@@ -5,33 +5,22 @@ import { embed } from "ai";
 
 const handler = createMcpHandler(
   async (server) => {
-    server.registerTool(
+    server.tool(
       "echo",
-      {
-        title: "echo",
-        description: "Echo a message",
-        inputSchema: z.object({
-          message: z.string().min(1).max(100),
-        }),
-      },
+      "Echo a message",
+      { message: z.string().min(1).max(100) },
       async ({ message }) => ({
         content: [{ type: "text", text: `Tool echo: ${message}` }],
       })
     );
-     server.registerTool(
+    server.tool(
       "echo2",
-      {
-        title: "echo2",
-        description: "Echo a message",
-        inputSchema: z.object({
-          message: z.string().min(1).max(100),
-        }),
-      },
+      "Echo a message",
+      { message: z.string().min(1).max(100) },
       async ({ message }) => ({
         content: [{ type: "text", text: `Tool echo: ${message}` }],
       })
     );
-  
   },
   {},
   {
