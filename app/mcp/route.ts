@@ -21,7 +21,7 @@ const handler = createMcpHandler(
      server.registerTool(
       "echo2",
       {
-        title: "echo",
+        title: "echo2",
         description: "Echo a message",
         inputSchema: z.object({
           message: z.string().min(1).max(100),
