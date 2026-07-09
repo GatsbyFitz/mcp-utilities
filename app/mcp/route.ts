@@ -18,19 +18,6 @@ const handler = createMcpHandler(
         content: [{ type: "text", text: `Tool echo: ${message}` }],
       })
     );
-     server.registerTool(
-      "echo2",
-      {
-        title: "echo2",
-        description: "Echo a message",
-        inputSchema: z.object({
-          message: z.string().min(1).max(100),
-        }),
-      },
-      async ({ message }) => ({
-        content: [{ type: "text", text: `Tool echo: ${message}` }],
-      })
-    );
   
   },
   {},
@@ -38,7 +25,7 @@ const handler = createMcpHandler(
     basePath: "",
     verboseLogs: true,
     maxDuration: 800,
-    redisUrl: process.env.KV_URL,
+    disableSse: true,
   }
 );
 
