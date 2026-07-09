@@ -17,8 +17,21 @@ const handler = createMcpHandler(
       async ({ message }) => ({
         content: [{ type: "text", text: `Tool echo: ${message}` }],
       })
+    ),
+     server.registerTool(
+      "echo2",
+      {
+        title: "echo",
+        description: "Echo a message",
+        inputSchema: z.object({
+          message: z.string().min(1).max(100),
+        }),
+      },
+      async ({ message }) => ({
+        content: [{ type: "text", text: `Tool echo: ${message}` }],
+      })
     );
-
+  
   },
   {},
   {
