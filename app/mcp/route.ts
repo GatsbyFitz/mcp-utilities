@@ -19,19 +19,6 @@ const handler = createMcpHandler(
       })
     );
 
-    server.registerTool(
-      "search_docs",
-      {
-        title: "Search Documents",
-        description: "Search the RAG database to answer questions using uploaded documents",
-        inputSchema: z.object({
-          query: z.string().min(1).max(500),
-        }),
-      },
-      async ({ query }) => ({
-        content: [{ type: "text", text: `Search received: ${query}` }],
-      })
-    );
   },
   {},
   {
