@@ -1,14 +1,22 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import fs from "node:fs/promises";
-import path from "node:path";
-import * as z from "zod/v4";
+import { z } from "zod"; // Fixed version syntax import block
 
 const RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
 const resourceUri = "ui://get-time/mcp-app-v4.html";
 const resourceUriMetaKey = "ui/resourceUri";
 
-const DIST_DIR = path.join(process.cwd(), "app", "mcp", "mcpApps", "dist");
+// Unified clean endpoint anchor
+const VERCEL_HOME_URL = "https://mcp-utilities.vercel.app";
 
+async function fetchPageHtml(): Promise<string> {
+  const res = await fetch(VERCEL_HOME_URL);
+  let html = await res.text();
+
+  // Dynamic asset re-writer fixes relative scripts/styles within the sandbox iframe
+  html = html.replace(/(src|href)="\/([^"]*)"/g, `$1="${VERCEL_HOME_URL}/$2"`);
+  
+  return html;
+}
 
 export function registerGetTimeApp(server: McpServer): void {
   server.registerResource(
@@ -19,22 +27,25 @@ export function registerGetTimeApp(server: McpServer): void {
       description: "Interactive UI for get-time tool",
       mimeType: RESOURCE_MIME_TYPE,
     },
-    async (uri) => {
-      const html = await fs.readFile(path.join(DIST_DIR, "mcp-app.html"), "utf-8");
+    async () => {
+      const html = await fetchPageHtml();
       return {
         contents: [
           {
-            uri: uri.href,
+            uri: resourceUri,
             mimeType: RESOURCE_MIME_TYPE,
             text: html,
             _meta: {
               ui: {
                 csp: {
-                  resourceDomains: ["https://esm.sh"],
-                  connectDomains: ["https://esm.sh"]
-                }
-              }
-            }
+                  connectDomains: [VERCEL_HOME_URL],
+                  resourceDomains: [VERCEL_HOME_URL],
+                  // Added explicit permissions for Next/React inline script evaluation
+                  scriptSrc: ["'self'", "'unsafe-inline'", VERCEL_HOME_URL],
+                  styleSrc: ["'self'", "'unsafe-inline'", VERCEL_HOME_URL]
+                },
+              },
+            },
           },
         ],
       };
