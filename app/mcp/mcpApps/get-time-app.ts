@@ -3,7 +3,7 @@ import { z } from "zod";
 
 const RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
 // Updated to v5 to match your exact configuration
-const resourceUri = "ui://get-time/mcp-app-v5.html"; 
+const resourceUri = "ui://get-time/mcp-app-v6.html"; 
 const resourceUriMetaKey = "ui/resourceUri";
 
 const VERCEL_HOME_URL = "https://mcp-utilities.vercel.app";
