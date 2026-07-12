@@ -1,18 +1,18 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { z } from "zod"; // Fixed version syntax import block
+import { z } from "zod"; 
 
 const RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
-const resourceUri = "ui://get-time/mcp-app-v5.html";
+// Updated to v5 to match your exact configuration
+const resourceUri = "ui://get-time/mcp-app-v5.html"; 
 const resourceUriMetaKey = "ui/resourceUri";
-
 
 const VERCEL_HOME_URL = "https://mcp-utilities.vercel.app";
 
 async function fetchPageHtml(path: string): Promise<string> {
-  const res = await fetch(`${VERCEL_HOME_URL}${path}`);
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  const res = await fetch(`${VERCEL_HOME_URL}${cleanPath}`);
   return res.text();
 }
-
 
 export function registerGetTimeApp(server: McpServer): void {
   server.registerResource(
@@ -36,6 +36,10 @@ export function registerGetTimeApp(server: McpServer): void {
                 csp: {
                   connectDomains: [VERCEL_HOME_URL],
                   resourceDomains: [VERCEL_HOME_URL],
+                  // CRITICAL CONFIGURATION: Without these inline bypass rules, 
+                  // Claude's sandbox interface environment will block execution.
+                  scriptSrc: ["'self'", "'unsafe-inline'", VERCEL_HOME_URL],
+                  styleSrc: ["'self'", "'unsafe-inline'", VERCEL_HOME_URL]
                 },
               },
             },
