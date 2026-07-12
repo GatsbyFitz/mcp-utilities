@@ -1,84 +1,68 @@
-import { McpServer } from "@modelcontextprotocol/server";
-import { z } from "zod"; 
-import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
+import type { McpServer } from "@modelcontextprotocol/server";
+import { z } from "zod";
 
-// Keep this static and stable so it never breaks on server restarts
-const resourceUri = "ui://get-time/static-app.html"; 
+const RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
+const resourceUri = "ui://get-time/mcp-app-v5.html";
 const resourceUriMetaKey = "ui/resourceUri";
 
+// Pure, self-contained single-file HTML delivery. 
+// Bypasses file system lookups and Vercel network header blocks entirely.
+const WIDGET_HTML_PAYLOAD = `
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Get Time Widget</title>
+    <style>
+      body { font-family: system-ui, sans-serif; padding: 16px; margin: 0; background: #fff; }
+      .card { border: 1px solid #e2e8f0; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+      h1 { font-size: 1.25rem; color: #1e293b; margin: 0 0 12px 0; }
+      .time-box { font-size: 1.5rem; font-weight: 700; color: #2563eb; font-family: monospace; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Server Time Widget</h1>
+      <div id="time-display" class="time-box">Initializing...</div>
+    </div>
+    <script>
+      console.log("Vite Single-File App mounted securely inside Claude Sandbox.");
+      
+      function formatTime() {
+        document.getElementById("time-display").innerText = new Date().toLocaleTimeString();
+      }
+      
+      formatTime();
+      setInterval(formatTime, 1000);
+    </script>
+  </body>
+</html>
+`;
+
 export function registerGetTimeApp(server: McpServer): void {
-  
-  // 1. Static Resource Shell
   server.registerResource(
     "get-time-app-ui",
     resourceUri,
     {
       title: "Get Time App UI",
-      description: "Static UI container displaying a localized runtime clock.",
+      description: "Interactive UI for get-time tool",
       mimeType: RESOURCE_MIME_TYPE,
     },
     async () => {
-      // Inlined HTML completely removes the need for fetch() or VERCEL_HOME_URL
-      const htmlPayload = `
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <title>Static Get Time App</title>
-          <style>
-            body { 
-              font-family: system-ui, -apple-system, sans-serif; 
-              padding: 16px; 
-              background: #111111; 
-              color: #ffffff; 
-              margin: 0;
-              display: flex;
-              justify-content: center;
-            }
-            .card { 
-              border: 1px solid #2a2a2a; 
-              padding: 20px; 
-              border-radius: 12px; 
-              background: #1a1a1a; 
-              width: 100%;
-              max-width: 260px; 
-              text-align: center;
-            }
-            h1 { margin: 0 0 12px 0; font-size: 1.1rem; color: #a78bfa; text-transform: uppercase; }
-            #time-display { font-family: monospace; font-size: 1.75rem; font-weight: bold; color: #34d399; }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <h1>Local System Clock</h1>
-            <div id="time-display">00:00:00</div>
-          </div>
-
-          <script>
-            function updateClock() {
-              document.getElementById("time-display").innerText = new Date().toLocaleTimeString();
-            }
-            updateClock();
-            setInterval(updateClock, 1000);
-
-            // Mandatory handshake so the host knows the canvas is ready to render
-            window.parent.postMessage({ type: "mcp-app-ready" }, "*");
-          </script>
-        </body>
-        </html>
-      `;
-
       return {
         contents: [
           {
             uri: resourceUri,
             mimeType: RESOURCE_MIME_TYPE,
-            text: htmlPayload,
+            text: WIDGET_HTML_PAYLOAD, // Serves the bundle instantly
             _meta: {
               ui: {
-                // Empty CSP structures are fine since there are zero external connections
                 csp: {
-                  connectDomains: [],
-                  resourceDomains: [],
+                  connectDomains: ["*"],
+                  resourceDomains: ["*"],
+                  scriptSrc: ["'self'", "'unsafe-inline'"],
+                  styleSrc: ["'self'", "'unsafe-inline'"]
                 },
               },
             },
@@ -88,12 +72,11 @@ export function registerGetTimeApp(server: McpServer): void {
     }
   );
 
-  // 2. Simple Tool Gateway
   server.registerTool(
     "get_time_app",
     {
       title: "Get Time",
-      description: "Launches the client-side clock layout.",
+      description: "Returns current server time and opens app UI.",
       inputSchema: z.object({}),
       _meta: {
         ui: { resourceUri },
@@ -101,9 +84,10 @@ export function registerGetTimeApp(server: McpServer): void {
       },
     },
     async () => {
+      const time = new Date().toISOString();
       return {
-        content: [{ type: "text", text: "Opening the isolated static widget panel..." }],
-        structuredContent: {}, // Passing an empty object prevents token bloat
+        content: [{ type: "text", text: time }],
+        structuredContent: { time },
       };
     }
   );
