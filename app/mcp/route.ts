@@ -1,5 +1,5 @@
 import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
-import { registerAllTools } from "@/mcp/tools";
+import { registerAllTools } from "./tools";
 
 function buildServer(): McpServer {
   const server = new McpServer({ name: "nextjs-mcp-server", version: "1.0.0" });
