@@ -1,24 +1,73 @@
-# Example Next.js MCP Server
+# Next.js MCP Utilities
 
-**Uses `mcp-handler`**
+A Next.js app that lets you upload PDF documents, embed them into Upstash Vector, and expose an MCP server with searchable tools over Streamable HTTP.
 
-## Usage
+## What this project does
 
-This sample app uses the [Vercel MCP Adapter](https://www.npmjs.com/package/mcp-handler) that allows you to drop in an MCP server on a group of routes in any Next.js project.
+- Uploads PDF files from the web UI at the root page.
+- Extracts text from PDFs, chunks the text, and stores embeddings in Upstash Vector.
+- Exposes an MCP endpoint at /mcp using MCP v2 server transport.
+- Includes two tools:
+  - echo: simple connectivity test tool
+  - search_docs: semantic search over indexed document chunks
 
-Update `app/[transport]/route.ts` with your tools, prompts, and resources following the [MCP TypeScript SDK documentation](https://github.com/modelcontextprotocol/typescript-sdk/tree/main?tab=readme-ov-file#server).
+## Requirements
 
-## Notes for running on Vercel
+- Node.js 20 or newer
+- pnpm
+- Upstash Vector database
+- Google embeddings credentials for AI SDK
 
-- To use the SSE transport, requires a Redis attached to the project under `process.env.REDIS_URL` and toggling the `disableSse` flag to `false` in `app/mcp/route.ts`
-- Make sure you have [Fluid compute](https://vercel.com/docs/functions/fluid-compute) enabled for efficient execution
-- After enabling Fluid compute, open `app/route.ts` and adjust `maxDuration` to 800 if you using a Vercel Pro or Enterprise account
-- [Deploy the Next.js MCP template](https://vercel.com/templates/next.js/model-context-protocol-mcp-with-next-js)
+## Install and run
 
-## Sample Client
+1. Install dependencies
 
-`script/test-client.mjs` contains a sample client to try invocations.
+       pnpm install
 
-```sh
-node scripts/test-client.mjs https://mcp-for-next-js.vercel.app
-```
+2. Start development server
+
+       pnpm dev
+
+3. Open app
+
+       http://localhost:3000
+
+## Ingestion flow
+
+1. Upload a PDF in the UI.
+2. Server parses the PDF text.
+3. Text is split into chunks.
+4. AI SDK generates embeddings using google/gemini-embedding-2 with dimension 1536.
+5. Chunks are upserted into Upstash with metadata:
+   - text
+   - source
+   - chunkIndex
+
+## MCP endpoint
+
+- Endpoint: /mcp
+- Methods: GET, POST, DELETE
+- Transport: Streamable HTTP with stateless session mode
+
+## Registered tools
+
+### echo
+
+**Input**
+- message: string, min 1, max 100
+
+**Output**
+- text response echoing the input
+
+### search_docs
+
+**Input**
+- query: string, min 2, max 1000
+- topK: integer, 1 to 10, default 5
+
+**Behavior**
+- Embeds the query using AI SDK
+- Queries Upstash Vector by similarity
+- Returns a text summary and structured match payload with score, source, chunkIndex, and text
+
+If you want, I can also give you a polished full README version with sections for environment variables, troubleshooting, and local testing commands.
