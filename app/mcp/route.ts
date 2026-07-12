@@ -15,7 +15,55 @@ const ready = server.connect(transport);
 
 async function handler(request: Request): Promise<Response> {
   await ready;
-  return transport.handleRequest(request);
+
+  const startedAt = Date.now();
+  let rpcMethod = "unknown";
+  let rpcId: string | number | null = null;
+
+  if (request.method === "POST") {
+    try {
+      const bodyText = await request.clone().text();
+      if (bodyText) {
+        const body = JSON.parse(bodyText);
+        rpcMethod = typeof body?.method === "string" ? body.method : "non-request-payload";
+        rpcId = body?.id ?? null;
+      } else {
+        rpcMethod = "empty-body";
+      }
+    } catch {
+      rpcMethod = "invalid-json";
+    }
+  } else {
+    rpcMethod = "http-" + request.method.toLowerCase();
+  }
+
+  console.log(
+    "[mcp:req]",
+    JSON.stringify({
+      method: request.method,
+      rpcMethod,
+      rpcId,
+      sessionId: request.headers.get("mcp-session-id"),
+      protocolVersion: request.headers.get("mcp-protocol-version"),
+      accept: request.headers.get("accept"),
+    })
+  );
+
+  const response = await transport.handleRequest(request);
+
+  console.log(
+    "[mcp:res]",
+    JSON.stringify({
+      method: request.method,
+      rpcMethod,
+      rpcId,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      contentType: response.headers.get("content-type"),
+    })
+  );
+
+  return response;
 }
 
 export const maxDuration = 60;
