@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 
-const logoAppUri = "ui://utilities/logo-app.html";
+const logoAppUri = "ui://utilities/logo-app-v2.html"
 const resourceMimeType = "text/html;profile=mcp-app";
 const resourceUriMetaKey = "ui/resourceUri";
 
