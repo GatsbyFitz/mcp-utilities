@@ -1,45 +1,84 @@
-import type { McpServer } from "@modelcontextprotocol/server";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod"; 
+import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 
-const RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
-// Updated to v5 to match your exact configuration
-const resourceUri = "ui://get-time/mcp-app-v6.html"; 
+// Keep this static and stable so it never breaks on server restarts
+const resourceUri = "ui://get-time/static-app.html"; 
 const resourceUriMetaKey = "ui/resourceUri";
 
-const VERCEL_HOME_URL = "https://mcp-utilities.vercel.app";
-
-async function fetchPageHtml(path: string): Promise<string> {
-  const cleanPath = path.startsWith("/") ? path : `/${path}`;
-  const res = await fetch(`${VERCEL_HOME_URL}${cleanPath}`);
-  return res.text();
-}
-
 export function registerGetTimeApp(server: McpServer): void {
+  
+  // 1. Static Resource Shell
   server.registerResource(
     "get-time-app-ui",
     resourceUri,
     {
       title: "Get Time App UI",
-      description: "Interactive UI for get-time tool",
+      description: "Static UI container displaying a localized runtime clock.",
       mimeType: RESOURCE_MIME_TYPE,
     },
     async () => {
-      const html = await fetchPageHtml("/test");
+      // Inlined HTML completely removes the need for fetch() or VERCEL_HOME_URL
+      const htmlPayload = `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <title>Static Get Time App</title>
+          <style>
+            body { 
+              font-family: system-ui, -apple-system, sans-serif; 
+              padding: 16px; 
+              background: #111111; 
+              color: #ffffff; 
+              margin: 0;
+              display: flex;
+              justify-content: center;
+            }
+            .card { 
+              border: 1px solid #2a2a2a; 
+              padding: 20px; 
+              border-radius: 12px; 
+              background: #1a1a1a; 
+              width: 100%;
+              max-width: 260px; 
+              text-align: center;
+            }
+            h1 { margin: 0 0 12px 0; font-size: 1.1rem; color: #a78bfa; text-transform: uppercase; }
+            #time-display { font-family: monospace; font-size: 1.75rem; font-weight: bold; color: #34d399; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h1>Local System Clock</h1>
+            <div id="time-display">00:00:00</div>
+          </div>
+
+          <script>
+            function updateClock() {
+              document.getElementById("time-display").innerText = new Date().toLocaleTimeString();
+            }
+            updateClock();
+            setInterval(updateClock, 1000);
+
+            // Mandatory handshake so the host knows the canvas is ready to render
+            window.parent.postMessage({ type: "mcp-app-ready" }, "*");
+          </script>
+        </body>
+        </html>
+      `;
+
       return {
         contents: [
           {
             uri: resourceUri,
             mimeType: RESOURCE_MIME_TYPE,
-            text: html,
+            text: htmlPayload,
             _meta: {
               ui: {
+                // Empty CSP structures are fine since there are zero external connections
                 csp: {
-                  connectDomains: [VERCEL_HOME_URL],
-                  resourceDomains: [VERCEL_HOME_URL],
-                  // CRITICAL CONFIGURATION: Without these inline bypass rules, 
-                  // Claude's sandbox interface environment will block execution.
-                  scriptSrc: ["'self'", "'unsafe-inline'", VERCEL_HOME_URL],
-                  styleSrc: ["'self'", "'unsafe-inline'", VERCEL_HOME_URL]
+                  connectDomains: [],
+                  resourceDomains: [],
                 },
               },
             },
@@ -49,11 +88,12 @@ export function registerGetTimeApp(server: McpServer): void {
     }
   );
 
+  // 2. Simple Tool Gateway
   server.registerTool(
     "get_time_app",
     {
       title: "Get Time",
-      description: "Returns current server time and opens app UI.",
+      description: "Launches the client-side clock layout.",
       inputSchema: z.object({}),
       _meta: {
         ui: { resourceUri },
@@ -61,10 +101,9 @@ export function registerGetTimeApp(server: McpServer): void {
       },
     },
     async () => {
-      const time = new Date().toISOString();
       return {
-        content: [{ type: "text", text: time }],
-        structuredContent: { time },
+        content: [{ type: "text", text: "Opening the isolated static widget panel..." }],
+        structuredContent: {}, // Passing an empty object prevents token bloat
       };
     }
   );
