@@ -1,7 +1,4 @@
 import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
-import * as z from "zod/v4";
-import { embed } from "ai";
-import { vectorIndex } from "@/lib/vector";
 import { registerAllTools } from "@/mcp/tools";
 
 function buildServer(): McpServer {
