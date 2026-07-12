@@ -5,18 +5,14 @@ const RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
 const resourceUri = "ui://get-time/mcp-app-v4.html";
 const resourceUriMetaKey = "ui/resourceUri";
 
-// Unified clean endpoint anchor
+
 const VERCEL_HOME_URL = "https://mcp-utilities.vercel.app";
 
-async function fetchPageHtml(): Promise<string> {
-  const res = await fetch(VERCEL_HOME_URL);
-  let html = await res.text();
-
-  // Dynamic asset re-writer fixes relative scripts/styles within the sandbox iframe
-  html = html.replace(/(src|href)="\/([^"]*)"/g, `$1="${VERCEL_HOME_URL}/$2"`);
-  
-  return html;
+async function fetchPageHtml(path: string): Promise<string> {
+  const res = await fetch(`${VERCEL_HOME_URL}${path}`);
+  return res.text();
 }
+
 
 export function registerGetTimeApp(server: McpServer): void {
   server.registerResource(
@@ -28,7 +24,7 @@ export function registerGetTimeApp(server: McpServer): void {
       mimeType: RESOURCE_MIME_TYPE,
     },
     async () => {
-      const html = await fetchPageHtml();
+      const html = await fetchPageHtml("/");
       return {
         contents: [
           {
@@ -40,9 +36,6 @@ export function registerGetTimeApp(server: McpServer): void {
                 csp: {
                   connectDomains: [VERCEL_HOME_URL],
                   resourceDomains: [VERCEL_HOME_URL],
-                  // Added explicit permissions for Next/React inline script evaluation
-                  scriptSrc: ["'self'", "'unsafe-inline'", VERCEL_HOME_URL],
-                  styleSrc: ["'self'", "'unsafe-inline'", VERCEL_HOME_URL]
                 },
               },
             },
