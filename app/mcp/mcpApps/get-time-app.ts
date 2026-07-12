@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod"; // Fixed version syntax import block
 
 const RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
-const resourceUri = "ui://get-time/mcp-app-v4.html";
+const resourceUri = "ui://get-time/mcp-app-v5.html";
 const resourceUriMetaKey = "ui/resourceUri";
 
 
