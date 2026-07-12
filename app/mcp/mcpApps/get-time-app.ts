@@ -24,7 +24,7 @@ export function registerGetTimeApp(server: McpServer): void {
       mimeType: RESOURCE_MIME_TYPE,
     },
     async () => {
-      const html = await fetchPageHtml("/");
+      const html = await fetchPageHtml("/test");
       return {
         contents: [
           {
