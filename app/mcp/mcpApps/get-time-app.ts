@@ -27,6 +27,14 @@ export function registerGetTimeApp(server: McpServer): void {
             uri: uri.href,
             mimeType: RESOURCE_MIME_TYPE,
             text: html,
+            _meta: {
+              ui: {
+                csp: {
+                  resourceDomains: ["https://esm.sh"],
+                  connectDomains: ["https://esm.sh"]
+                }
+              }
+            }
           },
         ],
       };
