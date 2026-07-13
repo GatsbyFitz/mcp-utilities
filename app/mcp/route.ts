@@ -2,85 +2,76 @@ import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelconte
 import { registerAllTools } from "./tools";
 
 function buildServer(): McpServer {
-const server = new McpServer({ name: "nextjs-mcp-server", version: "1.0.0" });
-registerAllTools(server);
-return server;
+  const server = new McpServer({ name: "nextjs-mcp-server", version: "1.0.0" });
+  registerAllTools(server);
+  return server;
 }
 
 const server = buildServer();
-const transport = new WebStandardStreamableHTTPServerTransport({
-sessionIdGenerator: undefined,
-});
-const ready = server.connect(transport);
 
 async function handler(request: Request): Promise<Response> {
-await ready;
+  const sessionId = request.headers.get("mcp-session-id") || crypto.randomUUID();
 
-const startedAt = Date.now();
-let rpcMethod = "unknown";
-let rpcId: string | number | null = null;
-
-if (request.method === "POST") {
-try {
-const bodyText = await request.clone().text();
-if (bodyText) {
-const body = JSON.parse(bodyText);
-rpcMethod = typeof body?.method === "string" ? body.method : "non-request-payload";
-rpcId = body?.id ?? null;
-      } else {
-rpcMethod = "empty-body";
-      }
+  // 1. Parse the RPC method safely without consuming the main stream
+  let rpcMethod = "unknown";
+  if (request.method === "POST") {
+    try {
+      const body = await request.clone().json();
+      rpcMethod = body?.method ?? "non-request-payload";
     } catch {
-rpcMethod = "invalid-json";
+      rpcMethod = "invalid-json";
     }
   } else {
-rpcMethod = "http-" + request.method.toLowerCase();
+    rpcMethod = `http-${request.method.toLowerCase()}`;
   }
 
-console.log(
-"[mcp:req]",
-JSON.stringify({
-method: request.method,
-rpcMethod,
-rpcId,
-sessionId: request.headers.get("mcp-session-id"),
-protocolVersion: request.headers.get("mcp-protocol-version"),
-accept: request.headers.get("accept"),
-    })
-  );
+  // 2. Instantiate a request-scoped transport
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: () => sessionId
+  });
 
-const response = await transport.handleRequest(request);
+  // 3. DYNAMIC REHYDRATION BOUNDARY
+  // Safely grab the internal standard transport engine
+  const innerTransport = (transport as any)._webStandardTransport || transport;
+  
+  if (innerTransport) {
+    innerTransport.sessionId = sessionId;
+    
+    if (rpcMethod === "initialize") {
+      // Let the SDK perform the natural initialization workflow
+      innerTransport._initialized = false; 
+    } else {
+      // Force initialization state ONLY for downstream tool/app execution
+      innerTransport._initialized = true; 
+    }
+  }
 
-// FIX: Remove the invalid webrtc CSP directive
-const newHeaders = new Headers(response.headers);
-const csp = newHeaders.get("Content-Security-Policy") || "";
-const cleanedCsp = csp.replace(/webrtc[^;]*/g, "").trim();
-if (cleanedCsp) {
-newHeaders.set("Content-Security-Policy", cleanedCsp);
-} else {
-newHeaders.delete("Content-Security-Policy");
-}
+  // 4. Connect and process
+  await server.connect(transport);
 
-const cleanedResponse = new Response(response.body, {
-status: response.status,
-statusText: response.statusText,
-headers: newHeaders,
-});
+  console.log(`[mcp:req] Method: ${request.method} | RPC: ${rpcMethod} | Session: ${sessionId}`);
 
-console.log(
-"[mcp:res]",
-JSON.stringify({
-method: request.method,
-rpcMethod,
-rpcId,
-status: cleanedResponse.status,
-durationMs: Date.now() - startedAt,
-contentType: cleanedResponse.headers.get("content-type"),
-    })
-  );
+  const response = await transport.handleRequest(request);
 
-return cleanedResponse;
+  // 5. Inject full CORS headers for interactive client frames
+  response.headers.set("Access-Control-Allow-Origin", "*");
+  response.headers.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, mcp-protocol-version");
+
+  return response;
 }
 
 export const maxDuration = 60;
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, mcp-session-id, mcp-protocol-version",
+    },
+  });
+}
+
 export { handler as GET, handler as POST, handler as DELETE };
