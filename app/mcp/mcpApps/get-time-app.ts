@@ -2,12 +2,12 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { baseURL } from "@/baseUrl"
 
-const RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
+import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server"; 
+
 const resourceUri = "ui://get-time/mcp-app-v5.html";
-const resourceUriMetaKey = "ui/resourceUri";
 
 async function fetchPageHtml(path: string): Promise<string> {
-  const res = await fetch(`${baseURL}${path}`);
+  const res = await fetch(`${baseURL}${path}`, { headers: { "Content-Type": "text/html" } });
   return res.text();
 }
 
