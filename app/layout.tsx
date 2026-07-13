@@ -46,6 +46,7 @@ function IframeBootstrap({ baseUrl }: { baseUrl: string }) {
   return (
     <>
       {/* Resolve relative URLs (/_next/static, /about, etc.) to the real server */}
+      <base href={baseUrl} />
       <script
         dangerouslySetInnerHTML={{
           __html: `window.__baseUrl=${JSON.stringify(baseUrl)};`,
