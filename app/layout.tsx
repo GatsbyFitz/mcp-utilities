@@ -127,7 +127,6 @@ function iframePatchFn() {
       const url = new URL(a.href, window.location.href);
       if (url.origin !== window.location.origin && url.origin !== appOrigin) {
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (window as any).openai?.openExternal?.({ href: a.href });
           e.preventDefault();
         } catch {
