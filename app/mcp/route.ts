@@ -1,8 +1,6 @@
 import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { registerAllTools } from "./tools";
 
-export const runtime = "edge";
-export const dynamic = "force-dynamic";
 
 function buildServer(): McpServer {
   const server = new McpServer({ name: "nextjs-mcp-server", version: "1.0.0" });
@@ -70,4 +68,5 @@ async function handler(request: Request): Promise<Response> {
 }
 
 export const maxDuration = 60;
+export const runtime = "edge";
 export { handler as GET, handler as POST, handler as DELETE };
