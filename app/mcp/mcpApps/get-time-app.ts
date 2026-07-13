@@ -4,7 +4,7 @@ import { baseURL } from "@/baseUrl"
 
 import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server"; 
 
-const resourceUri = "ui://get-time/mcp-app-v5.html";
+const resourceUri = "ui://get-time/mcp-app-v11.html";
 
 async function fetchPageHtml(path: string): Promise<string> {
   const res = await fetch(`${baseURL}${path}`, { headers: { "Content-Type": "text/html" } });
@@ -32,8 +32,10 @@ export function registerGetTimeApp(server: McpServer): void {
             _meta: {
               ui: {
                 csp: {
-                  connectDomains: [baseURL],
-                  resourceDomains: [baseURL],
+                  connectDomains: ["*"],  // Allow all domains (less secure)
+                  resourceDomains: ["*"],
+                  styleDomains: ["*"],
+                  scriptDomains: ["*"],
                 },
               },
             },
