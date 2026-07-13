@@ -1,81 +1,73 @@
 import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { registerAllTools } from "./tools";
 
-//LETS JUST USE THE FUCKING MCP HANDLER!
-
-// 1. FORCE EDGE RUNTIME (Disables Vercel response buffering)
+// 1. Force Edge Runtime & Disable Response Buffering
 export const runtime = "edge"; 
 export const maxDuration = 60;
 
-// Helper to configure a clean, deterministic instance per request
+// Request-scoped server isolation matching vercel/mcp-handler lifecycle hooks
 function createRequestScopedServer(): McpServer {
   const server = new McpServer({ 
     name: "nextjs-vercel-mcp-server", 
     version: "1.0.0" 
   });
   
-  // Register your tools safely
   registerAllTools(server);
   return server;
 }
 
+// 2. Main Entry Point (Replicating vercel/mcp-handler/src/handler/mcp-api-handler.ts)
 async function handler(request: Request): Promise<Response> {
-  const sessionId = request.headers.get("mcp-session-id") || crypto.randomUUID();
-
-  // 2. Identify the RPC execution intent before binding state
-  let rpcMethod = "unknown";
-  if (request.method === "POST") {
-    try {
-      const body = await request.clone().json();
-      rpcMethod = body?.method ?? "non-request-payload";
-    } catch {
-      rpcMethod = "invalid-json";
-    }
-  } else {
-    rpcMethod = `http-${request.method.toLowerCase()}`;
+  // Direct interception of browser/extension preflight rules
+  if (request.method === "OPTIONS") {
+    return createCorsResponse(new Response(null, { status: 204 }));
   }
 
-  // 3. Create isolated server and transport bindings for this network call
+  // Enforce session identifier strings
+  const sessionId = request.headers.get("mcp-session-id") || crypto.randomUUID();
+
+  // Instantiate clean sandbox structures
   const server = createRequestScopedServer();
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => sessionId
   });
 
-  const innerTransport = (transport as any)._webStandardTransport || transport;
-  if (innerTransport) {
-    innerTransport.sessionId = sessionId;
-    // Bypasses local initialization errors for downstream stateless operations
-    innerTransport._initialized = (rpcMethod !== "initialize");
-  }
-
-  // Bind the runtime instance
+  // Bind server context
   await server.connect(transport);
 
-  console.log(`[mcp:vercel] Method: ${request.method} | RPC: ${rpcMethod} | Session: ${sessionId}`);
-
-  // 4. Process request execution natively
-  const response = await transport.handleRequest(request);
-
-  // 5. Inject hard security headers for sandboxed browser runtimes
-  response.headers.set("Access-Control-Allow-Origin", "*");
-  response.headers.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  response.headers.set("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, mcp-protocol-version, authorization");
-
-  return response;
+  // Replicating Vercel's response execution block natively
+  try {
+    const response = await transport.handleRequest(request);
+    return createCorsResponse(response);
+  } catch (error) {
+    console.error("[mcp:error]", error);
+    return createCorsResponse(
+      new Response(JSON.stringify({ jsonrpc: "2.0", error: { code: -32603, message: "Internal server error" }, id: null }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+  }
 }
 
-// Ensure cross-origin preflight requests exit cleanly without executing protocol logic
-export async function OPTIONS() {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, mcp-session-id, mcp-protocol-version, authorization",
-    },
+// 3. Replicating vercel/mcp-handler/src/handler/server-response-adapter.ts
+// Securely builds a new headers context map to prevent mutation frozen errors on edge runtimes
+function createCorsResponse(response: Response): Response {
+  const headers = new Headers(response.headers);
+  
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  headers.set("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, mcp-protocol-version, authorization");
+  
+  // Re-expose headers needed by specific local client apps (like Cursor/Claude Desktop)
+  headers.set("Access-Control-Expose-Headers", "mcp-session-id, mcp-protocol-version");
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
   });
 }
 
-export { handler as GET, handler as POST, handler as DELETE };
-
-
+// Route assignments matching any incoming HTTP method profile cleanly
+export { handler as GET, handler as POST, handler as DELETE, handler as OPTIONS };
