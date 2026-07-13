@@ -6,17 +6,28 @@ import {
   registerAppTool,
 } from "@modelcontextprotocol/ext-apps/server";
 
-const resourceUri = "ui://get-time/mcp-app-v18.html";
+const resourceUri = "ui://get-time/mcp-app-v19.html";
 
 async function fetchPageHtml(path: string): Promise<string> {
   const url = `${baseURL}${path}`;
-  console.log("Fetching:", url); // Log this
-  const res = await fetch(url);
-  console.log("Response status:", res.status); // Log the status
-  if (!res.ok) {
-    throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  console.log("[get-time-app] Fetching:", url);
+  
+  try {
+    const res = await fetch(url);
+    console.log("[get-time-app] Status:", res.status);
+    
+    if (!res.ok) {
+      console.error(`[get-time-app] Fetch failed: ${res.status}`);
+      return "<h1>Error: " + res.status + "</h1>";
+    }
+    
+    const html = await res.text();
+    console.log("[get-time-app] HTML length:", html.length);
+    return html;
+  } catch (err) {
+    console.error("[get-time-app] Fetch error:", err);
+    return "<h1>Fetch error: " + String(err) + "</h1>";
   }
-  return res.text();
 }
 
 
