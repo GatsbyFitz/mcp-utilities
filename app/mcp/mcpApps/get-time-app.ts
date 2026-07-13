@@ -1,4 +1,3 @@
-import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { baseURL } from "@/baseUrl"
 import {
@@ -7,10 +6,16 @@ import {
   registerAppTool,
 } from "@modelcontextprotocol/ext-apps/server";
 
-const resourceUri = "ui://get-time/mcp-app-v17.html";
+const resourceUri = "ui://get-time/mcp-app-v18.html";
 
 async function fetchPageHtml(path: string): Promise<string> {
-  const res = await fetch(`${baseURL}${path}`);
+  const url = `${baseURL}${path}`;
+  console.log("Fetching:", url); // Log this
+  const res = await fetch(url);
+  console.log("Response status:", res.status); // Log the status
+  if (!res.ok) {
+    throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  }
   return res.text();
 }
 
