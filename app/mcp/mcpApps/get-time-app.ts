@@ -8,7 +8,7 @@ import {
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
 
-const resourceUri = "ui://get-time/mcp-app-v11.html";
+const resourceUri = "ui://get-time/mcp-app-v13.html";
 
 async function fetchPageHtml(path: string): Promise<string> {
   const res = await fetch(`${baseURL}${path}`, { headers: { "Content-Type": "text/html" } });
