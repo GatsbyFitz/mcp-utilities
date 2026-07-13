@@ -10,21 +10,10 @@ async function handler(req: Request) {
   
   // Clone response to modify headers
   const newResponse = new Response(response.body, response);
-  
-  // Remove problematic CSP directives
-  const csp = newResponse.headers.get("content-security-policy");
-  if (csp) {
-    const fixedCsp = csp
-      .split(";")
-      .filter(directive => {
-        const trimmed = directive.trim();
-        return !trimmed.startsWith("base-uri") && 
-               !trimmed.startsWith("webrtc");
-      })
-      .join(";");
-    
-    newResponse.headers.set("content-security-policy", fixedCsp);
-  }
+
+   // Remove the problematic CSP headers entirely
+  newResponse.headers.delete("content-security-policy");
+  newResponse.headers.delete("content-security-policy-report-only");
   
   return newResponse;
 }
