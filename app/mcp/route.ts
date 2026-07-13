@@ -1,6 +1,8 @@
 import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { registerAllTools } from "./tools";
 
+//LETS JUST USE THE FUCKING MCP HANDLER!
+
 // 1. FORCE EDGE RUNTIME (Disables Vercel response buffering)
 export const runtime = "edge"; 
 export const maxDuration = 60;
@@ -75,3 +77,5 @@ export async function OPTIONS() {
 }
 
 export { handler as GET, handler as POST, handler as DELETE };
+
+
