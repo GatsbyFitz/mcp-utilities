@@ -5,6 +5,7 @@ import PDFParser from "pdf2json";
 import { vectorIndex } from "@/lib/vector";
 import { sql } from "@/lib/db";
 import { embedMany } from "ai";
+import { put } from "@vercel/blob";
 
 function chunkText(text: string, size = 500): string[] {
   const words = text.split(/\s+/);
@@ -31,6 +32,16 @@ async function parsePdf(buffer: Buffer): Promise<string> {
   });
 }
 
+async function uploadToVercelBlob(file: File, buffer: Buffer): Promise<any> {
+  const blobPath = `uploads/${uuidv4()}-${file.name}`;
+  const blob = await put(blobPath, buffer, {
+    access: "public",
+    addRandomSuffix: false,
+  });
+  
+  return blob;
+}
+
 export async function POST(req: NextRequest) {
   const formData = await req.formData();
   const files = formData.getAll("files") as File[];
@@ -42,6 +53,8 @@ export async function POST(req: NextRequest) {
         const buffer = Buffer.from(await file.arrayBuffer());
         const text = await parsePdf(buffer);
         const chunks = chunkText(text);
+
+        const blob = await uploadToVercelBlob(file, buffer);
 
         const { embeddings } = await embedMany({
           model: "google/gemini-embedding-2",
@@ -56,17 +69,20 @@ export async function POST(req: NextRequest) {
         const vectors = embeddings.map((embedding, i) => ({
           id: `${file.name}-${i}`,
           vector: embedding,
-          metadata: { text: chunks[i], source: file.name, chunkIndex: i },
+          metadata: { text: chunks[i], source: file.name, chunkIndex: i, blobUrl: blob.url, blobDownloadUrl: blob.downloadUrl, blobPath: blob.pathname },
         }));
 
         await sql`
-          INSERT INTO uploads (id, name, chunks, size_bytes, uploaded_at)
+          INSERT INTO uploads (id, name, chunks, size_bytes, uploaded_at, blob_url, blob_download_url, blob_path)
           VALUES (
             ${uuidv4()},
             ${file.name},
             ${chunks.length},
             ${file.size},
-            NOW()
+            NOW(),
+            ${blob.url},
+            ${blob.downloadUrl},
+            ${blob.pathname}
           )
         `;
 

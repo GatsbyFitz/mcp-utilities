@@ -42,6 +42,7 @@ export function registerSearchDocsTool(server: McpServer): void {
               source?: string;
               chunkIndex?: number;
               citationId?: string;
+              blobUrl?: string;
             };
             return {
               id: md.citationId ?? m.id,
@@ -49,6 +50,7 @@ export function registerSearchDocsTool(server: McpServer): void {
               source: md.source ?? "unknown",
               chunkIndex: md.chunkIndex ?? null,
               text: md.text ?? "",
+              referenceUrl: md.blobUrl ?? null,
             };
           }),
         },
