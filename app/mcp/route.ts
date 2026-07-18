@@ -8,13 +8,13 @@ const baseHandler = createMcpHandler((server) => {
 async function handler(req: Request) {
   const response = await baseHandler(req);
   
-  const text = await response.text();
-  
-  const newResponse = new Response(text, {
+  // Clone the response instead of converting to text
+  const newResponse = new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
   });
   
+  // Copy headers except CSP
   for (const [key, value] of response.headers) {
     const lowerKey = key.toLowerCase();
     if (!lowerKey.includes("content-security-policy")) {
