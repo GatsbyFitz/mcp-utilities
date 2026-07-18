@@ -34,6 +34,10 @@ export function registerSearchDocsTool(server: McpServer): void {
             type: "text",
             text: "Found " + matches.length + " matching chunks.",
           },
+        {
+            type: "text",
+            text: JSON.stringify({ matches: matches }, null, 2),
+          },
         ],
         structuredContent: {
           matches: matches.map((m) => {
