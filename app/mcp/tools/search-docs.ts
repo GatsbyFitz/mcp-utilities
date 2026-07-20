@@ -96,8 +96,8 @@ export function registerSearchDocsTool(server: McpServer): void {
       try {
         const { embedding } = await embed({
           model: "google/gemini-embedding-2",
-          value: query,
-          providerOptions: { google: { outputDimensionality: 1536 } },
+          value: `task: search result | query: ${query}`,
+          providerOptions: { google: { outputDimensionality: 1536, taskType: "RETRIEVAL_QUERY" } },
         });
 
         const matches = await vectorIndex.query({
