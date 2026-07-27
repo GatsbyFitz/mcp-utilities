@@ -23,6 +23,7 @@
     "clsx": "^2.1.1",
     "lucide-react": "^1.23.0",
     "mcp-handler": "^1.1.0",
+    "neo4j-driver": "^6.2.0",
     "next": "^15.2.6",
     "pdf2json": "^4.0.3",
     "postcss": "^8.5.16",
