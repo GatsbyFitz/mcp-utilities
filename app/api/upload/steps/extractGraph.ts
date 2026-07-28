@@ -1,4 +1,4 @@
-import { generateObject, embedMany } from "ai";
+import { embedMany, generateText, Output } from "ai";
 import * as z from "zod/v4";
 import { writeGraph } from "@/lib/graph";
 import { chunkId, chunkText, extractTitle } from "@/lib/chunking";
@@ -22,29 +22,40 @@ Rules:
 - Both source and target must appear in your entities list.
 - If the excerpt is boilerplate, a table of contents, or has no substantive relationships, return empty arrays.`;
 
+// Deliberately unconstrained: Gemini's structured-output mode drops most JSON
+// Schema string/array constraints, so `.min`/`.max` here would not steer the
+// model but would still reject the response — one over-long description would
+// throw away the whole chunk. Limits are enforced in code below instead.
+// The arrays default to empty because the model tends to omit them entirely on
+// boilerplate rather than return `[]` as instructed.
 const ExtractionSchema = z.object({
   entities: z
     .array(
       z.object({
-        name: z.string().min(1).max(120),
+        name: z.string(),
         type: z
           .string()
-          .max(60)
           .describe("Short category: Party, Role, System, Concept, Obligation, Document"),
       })
     )
-    .max(30),
+    .default([]),
   relationships: z
     .array(
       z.object({
-        source: z.string().min(1).max(120),
-        relationType: z.string().min(1).max(60),
-        target: z.string().min(1).max(120),
-        description: z.string().min(1).max(400),
+        source: z.string(),
+        relationType: z.string(),
+        target: z.string(),
+        description: z.string(),
       })
     )
-    .max(40),
+    .default([]),
 });
+
+const MAX_ENTITIES = 30;
+const MAX_RELATIONSHIPS = 40;
+const MAX_NAME = 120;
+const MAX_TYPE = 60;
+const MAX_DESCRIPTION = 400;
 
 interface PendingRelation {
   source: string;
@@ -56,8 +67,8 @@ interface PendingRelation {
 }
 
 /** Collapse whitespace so "Metering  Provider\n" and "Metering Provider" MERGE as one node. */
-function normalizeName(name: string): string {
-  return name.trim().replace(/\s+/g, " ");
+function normalizeName(name: string, limit = MAX_NAME): string {
+  return name.trim().replace(/\s+/g, " ").slice(0, limit);
 }
 
 /** Run `worker` over items with bounded concurrency. */
@@ -87,33 +98,50 @@ export async function extractGraph(fileName: string, markdown: string) {
   // Extract per chunk so chunkId attribution is structural rather than
   // something the model has to get right. Concurrency caps the burst.
   const perChunk = await mapPool(chunks, 5, async (chunk, i) => {
-    const { object } = await generateObject({
-      model: "google/gemini-3-flash",
-      schema: ExtractionSchema,
-      prompt: `${EXTRACT_PROMPT}\n\nDocument: ${title}\n\nExcerpt:\n${chunk}`,
-    });
+    const types = new Map<string, string>();
+    const relations: PendingRelation[] = [];
+
+    let output: z.infer<typeof ExtractionSchema>;
+    try {
+      ({ output } = await generateText({
+        model: "google/gemini-3.5-flash-lite",
+        output: Output.object({ schema: ExtractionSchema }),
+        prompt: `${EXTRACT_PROMPT}\n\nDocument: ${title}\n\nExcerpt:\n${chunk}`,
+      }));
+    } catch (error) {
+      // mapPool awaits every runner together, so an unhandled throw here sinks
+      // an upload that has already paid for parsing and embedding. Drop the
+      // chunk, loudly, and keep the rest of the graph.
+      console.warn(
+        `[extractGraph] ${fileName} chunk ${i + 1}/${chunks.length}: extraction failed, skipping`,
+        error
+      );
+      return { types, relations };
+    }
 
     // The model is told both endpoints must be declared entities, but it
     // sometimes references one it forgot to list. Take the union of declared
     // entities and relationship endpoints rather than dropping the edge.
-    const types = new Map<string, string>();
-    for (const e of object.entities) {
+    for (const e of output.entities.slice(0, MAX_ENTITIES)) {
       const name = normalizeName(e.name);
-      if (name) types.set(name, e.type);
+      if (name) types.set(name, normalizeName(e.type, MAX_TYPE));
     }
 
-    const relations: PendingRelation[] = [];
-    for (const r of object.relationships) {
+    for (const r of output.relationships.slice(0, MAX_RELATIONSHIPS)) {
       const source = normalizeName(r.source);
       const target = normalizeName(r.target);
-      if (!source || !target || source === target) continue;
+      const relType = normalizeName(r.relationType, MAX_TYPE)
+        .toUpperCase()
+        .replace(/\s+/g, "_");
+      const description = r.description.trim().slice(0, MAX_DESCRIPTION);
+      if (!source || !target || source === target || !relType || !description) continue;
       if (!types.has(source)) types.set(source, "");
       if (!types.has(target)) types.set(target, "");
       relations.push({
         source,
         target,
-        relType: normalizeName(r.relationType).toUpperCase().replace(/\s+/g, "_"),
-        description: r.description.trim(),
+        relType,
+        description,
         chunkId: chunkId(fileName, i),
         sourceDoc: fileName,
       });
@@ -155,7 +183,7 @@ export async function extractGraph(fileName: string, markdown: string) {
       return type ? `entity: ${name} | type: ${type}` : `entity: ${name}`;
     }),
     providerOptions: {
-      google: { outputDimensionality: 1536, taskType: "RETRIEVAL_DOCUMENT" },
+      google: { outputDimensionality: 1536},
     },
   });
 

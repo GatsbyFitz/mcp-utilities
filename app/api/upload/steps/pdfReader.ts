@@ -24,7 +24,7 @@ export async function createMarkdown(blobUrl: string): Promise<string> {
   const buffer = Buffer.from(await res.arrayBuffer());
 
   const { text } = await generateText({
-    model: "google/gemini-3-flash",
+    model: "google/gemini-3.5-flash-lite",
     messages: [
       {
         role: "user",

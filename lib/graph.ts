@@ -11,11 +11,11 @@ const globalForNeo4j = globalThis as unknown as { neo4jDriver?: Driver };
 
 function createDriver(): Driver {
   const uri = process.env.NEO4J_URI;
-  const user = process.env.NEO4J_USER;
+  const user = process.env.NEO4J_USERNAME ?? process.env.NEO4J_USER;
   const password = process.env.NEO4J_PASSWORD;
   if (!uri || !user || !password) {
     throw new Error(
-      "Missing Neo4j env vars: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD"
+      "Missing Neo4j env vars: NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD"
     );
   }
   return neo4j.driver(uri, neo4j.auth.basic(user, password), {
@@ -31,11 +31,17 @@ function createDriver(): Driver {
   });
 }
 
-export const graphDriver: Driver =
-  globalForNeo4j.neo4jDriver ?? createDriver();
-
-if (process.env.NODE_ENV !== "production") {
-  globalForNeo4j.neo4jDriver = graphDriver;
+// Built on first query, not at import time: this module is pulled into the
+// workflow step route, and a config error thrown during module evaluation
+// takes down every step in the route, not just the graph ones.
+export function getGraphDriver(): Driver {
+  const existing = globalForNeo4j.neo4jDriver;
+  if (existing) return existing;
+  const driver = createDriver();
+  if (process.env.NODE_ENV !== "production") {
+    globalForNeo4j.neo4jDriver = driver;
+  }
+  return driver;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +54,9 @@ if (process.env.NODE_ENV !== "production") {
 export async function withSession<T>(
   fn: (session: Session) => Promise<T>
 ): Promise<T> {
-  const session = graphDriver.session();
+  const session = getGraphDriver().session({
+    database: process.env.NEO4J_DATABASE,
+  });
   try {
     return await fn(session);
   } finally {
