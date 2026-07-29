@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -57,6 +57,9 @@ export default function UploadPage() {
   const [message, setMessage] = useState("");
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeBase | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [reembeddingAll, setReembeddingAll] = useState(false);
+  const [reembeddingId, setReembeddingId] = useState<string | null>(null);
+  const [reembedMessage, setReembedMessage] = useState<{ text: string; error: boolean } | null>(null);
 
   const refreshKnowledgeBase = useCallback(async () => {
     setRefreshing(true);
@@ -76,6 +79,61 @@ export default function UploadPage() {
   useEffect(() => {
     refreshKnowledgeBase();
   }, [refreshKnowledgeBase]);
+
+  async function postReembed(id?: string) {
+    const res = await fetch("/api/reembed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(id ? { id } : {}),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error ?? `Re-embed request failed: ${res.status}`);
+    }
+    return data as { queued: number; skipped: number };
+  }
+
+  async function handleReembedAll() {
+    if (
+      !window.confirm(
+        "Re-embed every document in the knowledge base? This re-runs parsing, embedding, and graph extraction for each one and may take a while."
+      )
+    ) {
+      return;
+    }
+    setReembeddingAll(true);
+    setReembedMessage(null);
+    try {
+      const { queued, skipped } = await postReembed();
+      setReembedMessage({
+        text: `Queued ${queued} document(s) for re-embedding${skipped ? ` (${skipped} skipped, missing blob)` : ""}.`,
+        error: false,
+      });
+    } catch (error) {
+      setReembedMessage({
+        text: error instanceof Error ? error.message : "Re-embed failed",
+        error: true,
+      });
+    } finally {
+      setReembeddingAll(false);
+    }
+  }
+
+  async function handleReembedRow(id: string, name: string) {
+    setReembeddingId(id);
+    setReembedMessage(null);
+    try {
+      await postReembed(id);
+      setReembedMessage({ text: `Queued "${name}" for re-embedding.`, error: false });
+    } catch (error) {
+      setReembedMessage({
+        text: error instanceof Error ? error.message : "Re-embed failed",
+        error: true,
+      });
+    } finally {
+      setReembeddingId(null);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -157,7 +215,16 @@ export default function UploadPage() {
           <CardHeader>
             <CardTitle>Knowledge Base</CardTitle>
             <CardDescription>View the current knowledge base records</CardDescription>
-            <CardAction>
+            <CardAction className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleReembedAll}
+                disabled={reembeddingAll || !knowledgeBase?.items.length}
+              >
+                <Sparkles className={reembeddingAll ? "animate-spin" : ""} />
+                {reembeddingAll ? "Queuing..." : "Re-embed all"}
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
@@ -170,6 +237,11 @@ export default function UploadPage() {
             </CardAction>
           </CardHeader>
           <CardContent>
+            {reembedMessage && (
+              <p className={`mb-3 text-sm ${reembedMessage.error ? "text-red-400" : "text-green-400"}`}>
+                {reembedMessage.text}
+              </p>
+            )}
             {knowledgeBase && knowledgeBase.items.length > 0 ? (
               <Table>
                 <TableHeader>
@@ -221,6 +293,15 @@ export default function UploadPage() {
                               Download
                             </Button>
                           )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleReembedRow(item.id, item.name)}
+                            disabled={reembeddingId === item.id || reembeddingAll}
+                          >
+                            <Sparkles className={reembeddingId === item.id ? "animate-spin" : ""} />
+                            {reembeddingId === item.id ? "Queuing..." : "Re-embed"}
+                          </Button>
                         </div>
                       </TableCell>
                     </TableRow>

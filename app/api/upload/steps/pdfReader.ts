@@ -39,3 +39,13 @@ export async function createMarkdown(blobUrl: string): Promise<string> {
   if (!text.trim()) throw new Error("Gemini returned empty parse result"); // retryable
   return text;
 }
+
+// Re-embedding prefers this over createMarkdown when a document already has
+// a persisted markdown_url, skipping the Gemini parse entirely.
+export async function fetchMarkdown(markdownUrl: string): Promise<string> {
+  "use step";
+
+  const res = await fetch(markdownUrl);
+  if (!res.ok) throw new FatalError(`Markdown blob fetch failed: ${res.status}`);
+  return res.text();
+}

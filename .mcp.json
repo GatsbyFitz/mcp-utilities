@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mcp-utilities-local": {
+      "type": "http",
+      "url": "http://localhost:3000/mcp"
+    }
+  }
+}
