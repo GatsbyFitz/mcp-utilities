@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { RefreshCw, Sparkles } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -59,7 +59,8 @@ export default function UploadPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [reembeddingAll, setReembeddingAll] = useState(false);
   const [reembeddingId, setReembeddingId] = useState<string | null>(null);
-  const [reembedMessage, setReembedMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [actionMessage, setActionMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const refreshKnowledgeBase = useCallback(async () => {
     setRefreshing(true);
@@ -102,15 +103,15 @@ export default function UploadPage() {
       return;
     }
     setReembeddingAll(true);
-    setReembedMessage(null);
+    setActionMessage(null);
     try {
       const { queued, skipped } = await postReembed();
-      setReembedMessage({
+      setActionMessage({
         text: `Queued ${queued} document(s) for re-embedding${skipped ? ` (${skipped} skipped, missing blob)` : ""}.`,
         error: false,
       });
     } catch (error) {
-      setReembedMessage({
+      setActionMessage({
         text: error instanceof Error ? error.message : "Re-embed failed",
         error: true,
       });
@@ -121,17 +122,49 @@ export default function UploadPage() {
 
   async function handleReembedRow(id: string, name: string) {
     setReembeddingId(id);
-    setReembedMessage(null);
+    setActionMessage(null);
     try {
       await postReembed(id);
-      setReembedMessage({ text: `Queued "${name}" for re-embedding.`, error: false });
+      setActionMessage({ text: `Queued "${name}" for re-embedding.`, error: false });
     } catch (error) {
-      setReembedMessage({
+      setActionMessage({
         text: error instanceof Error ? error.message : "Re-embed failed",
         error: true,
       });
     } finally {
       setReembeddingId(null);
+    }
+  }
+
+  async function handleDeleteRow(id: string, name: string) {
+    if (
+      !window.confirm(
+        `Delete "${name}"? This removes the blob, the database record, and all its vectors/graph data. This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    setDeletingId(id);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/deleteDocument", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Delete failed: ${res.status}`);
+      }
+      setActionMessage({ text: `Deleted "${name}".`, error: false });
+      refreshKnowledgeBase();
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Delete failed",
+        error: true,
+      });
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -237,9 +270,9 @@ export default function UploadPage() {
             </CardAction>
           </CardHeader>
           <CardContent>
-            {reembedMessage && (
-              <p className={`mb-3 text-sm ${reembedMessage.error ? "text-red-400" : "text-green-400"}`}>
-                {reembedMessage.text}
+            {actionMessage && (
+              <p className={`mb-3 text-sm ${actionMessage.error ? "text-red-400" : "text-green-400"}`}>
+                {actionMessage.text}
               </p>
             )}
             {knowledgeBase && knowledgeBase.items.length > 0 ? (
@@ -297,10 +330,19 @@ export default function UploadPage() {
                             variant="outline"
                             size="sm"
                             onClick={() => handleReembedRow(item.id, item.name)}
-                            disabled={reembeddingId === item.id || reembeddingAll}
+                            disabled={reembeddingId === item.id || reembeddingAll || deletingId === item.id}
                           >
                             <Sparkles className={reembeddingId === item.id ? "animate-spin" : ""} />
                             {reembeddingId === item.id ? "Queuing..." : "Re-embed"}
+                          </Button>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => handleDeleteRow(item.id, item.name)}
+                            disabled={deletingId === item.id || reembeddingId === item.id}
+                          >
+                            <Trash2 className={deletingId === item.id ? "animate-spin" : ""} />
+                            {deletingId === item.id ? "Deleting..." : "Delete"}
                           </Button>
                         </div>
                       </TableCell>

@@ -207,9 +207,11 @@ interface PendingEntity {
 /**
  * Idempotent write: re-uploading a document replaces its edges instead of
  * duplicating them. Entities are MERGEd because they are shared across
- * documents; only this document's relationships are deleted.
+ * documents; only this document's relationships are deleted. Exported so
+ * document deletion can call it with empty entities/relations to clear a
+ * document's graph data without leaving stale chunkId references behind.
  */
-async function replaceDocumentGraph(
+export async function replaceDocumentGraph(
   fileName: string,
   entities: PendingEntity[],
   relations: PendingRelation[]

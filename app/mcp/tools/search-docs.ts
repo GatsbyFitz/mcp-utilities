@@ -1,9 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { embed, rerank } from "ai";
+import { WeightingStrategy } from "@upstash/vector";
 import { vectorIndex } from "@/lib/vector";
 import type { ChunkMetadata } from "@/lib/citations";
 import { toCitation, citationLine } from "@/lib/citations";
+import { sparseVector } from "@/lib/sparse";
 
 
 // ---------------------------------------------------------------------------
@@ -16,8 +18,10 @@ export function registerSearchDocsTool(server: McpServer): void {
     {
       title: "search_docs",
       description:
-        "Search uploaded document chunks using semantic vector search, then " +
-        "rerank the candidates for relevance. Results are numbered [1], [2], " +
+        "Search uploaded document chunks using hybrid search (semantic vector " +
+        "search combined with exact-term matching, e.g. document codes and " +
+        "IDs like 'IN008-24'), then rerank the candidates for relevance. " +
+        "Results are numbered [1], [2], " +
         "... with a citation header per result. When answering from these " +
         "results, cite claims using the document title, version, and page " +
         "range (e.g. 'Metering Provider Services SLP v2.0, pp. 10\u201311'), " +
@@ -39,6 +43,8 @@ export function registerSearchDocsTool(server: McpServer): void {
 
         const matches = await vectorIndex.query({
           vector: embedding,
+          sparseVector: sparseVector(query),
+          weightingStrategy: WeightingStrategy.IDF,
           topK,
           includeMetadata: true,
           includeVectors: false,

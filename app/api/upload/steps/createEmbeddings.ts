@@ -7,6 +7,7 @@ import { vectorIndex } from "@/lib/vector";
 import { embedMany } from "ai";
 import { BlobInfo } from "./recordUpload";
 import { chunkId, chunkText, extractTitle } from "@/lib/chunking";
+import { sparseVector } from "@/lib/sparse";
 
 export async function createEmbeddings(fileName: string, blob: BlobInfo, markdown: string) {
   "use step";
@@ -26,6 +27,7 @@ export async function createEmbeddings(fileName: string, blob: BlobInfo, markdow
     embeddings.map((embedding, i) => ({
       id: chunkId(fileName, i),
       vector: embedding,
+      sparseVector: sparseVector(chunks[i]),
       metadata: {
         text: chunks[i],
         title,
