@@ -69,6 +69,8 @@ Tool schemas import `zod/v4` (`import * as z from "zod/v4"`), while the MCP Apps
 
 Both search tools return a text rendering *and* `structuredContent`, and both catch errors into `{ isError: true }` rather than throwing. The text rendering is what the model actually cites, so it carries numbered citation headers built by [lib/citations.ts](lib/citations.ts) plus a deduplicated source list with blob URLs. `search_docs` is for direct lookups; `search_graph` is for relational questions — the descriptions say so explicitly and steer each other.
 
+MCP prompts (user-triggered templates, distinct from model-invoked tools) mirror the tool pattern: each file under [app/mcp/prompts/](app/mcp/prompts/) exports a single `registerXPrompt(server)`, wired through `registerAllPrompts` in [app/mcp/prompts/index.ts](app/mcp/prompts/index.ts), called alongside `registerAllTools` in `route.ts`. In a client that surfaces MCP prompts as slash commands (e.g. Claude Code), they appear as `/mcp__<server>__<prompt-name>` — subject to the same session-start caching caveat as tools above.
+
 ### MCP Apps (interactive UI)
 
 `get_time_app` pairs a tool with an HTML resource: the resource handler server-side `fetch`es a rendered Next.js page (`/test`) and returns its HTML with a CSP allowlist. This is why [baseUrl.ts](baseUrl.ts) exists and why it is also set as Next's `assetPrefix` — the iframe loads assets from an absolute origin. `BASE_URL` overrides it; otherwise it derives from `VERCEL_*` env vars. Bump the version in `resourceUri` when changing the UI, since hosts cache resources by URI.

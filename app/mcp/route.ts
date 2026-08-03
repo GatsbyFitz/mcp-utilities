@@ -1,8 +1,12 @@
 import { createMcpHandler } from "mcp-handler";
 import { registerAllTools } from "./tools";
+import { registerAllPrompts } from "./prompts";
+import { registerAllResources } from "./resources";
 
 const baseHandler = createMcpHandler((server) => {
   registerAllTools(server);
+  registerAllPrompts(server);
+  registerAllResources(server);
 });
 
 async function handler(req: Request) {
@@ -26,3 +30,5 @@ async function handler(req: Request) {
 }
 
 export { handler as GET, handler as POST, handler as DELETE };
+
+
