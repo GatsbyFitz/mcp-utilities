@@ -1,0 +1,124 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/block-workflow-artifacts.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(cat .env*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(cat *.env*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(less .env*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(head .env*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(tail .env*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(more .env*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(printenv*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(env)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(echo *DATABASE_URL*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(echo *NEO4J_PASSWORD*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(echo *NEO4J_URI*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(echo *NEO4J_USERNAME*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(echo *BLOB_READ_WRITE_TOKEN*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(echo *AI_GATEWAY_API_KEY*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(echo *UPSTASH_VECTOR_REST_TOKEN*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "if": "Bash(echo *UPSTASH_VECTOR_REST_URL*)",
+            "command": "node .claude/hooks/deny-secret-read.mjs"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/block-secrets.mjs"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/mcp-typecheck.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/joke.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}
