@@ -35,6 +35,7 @@ export async function DELETE(req: NextRequest) {
     // `${fileName}-${index}`, so a prefix delete for "report-" would also
     // catch a differently-named document like "report-2"'s chunks.
     await vectorIndex.delete({ filter: `source = '${escapeFilterValue(row.name)}'` });
+    
     await replaceDocumentGraph(row.name, [], []);
 
     const blobUrls = [row.blob_url, row.markdown_url].filter((u): u is string => Boolean(u));
