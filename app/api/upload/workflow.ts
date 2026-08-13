@@ -1,6 +1,7 @@
 import { IngestInput, recordUpload } from "./steps/recordUpload";
 import { uploadPdf, uploadMarkdown } from "./steps/uploadFile";
 import { createMarkdown } from "./steps/pdfReader";
+import { contextualizeChunks } from "./steps/contextualizeChunks";
 import { createEmbeddings } from "./steps/createEmbeddings";
 import { extractGraph } from "./steps/extractGraph";
 
@@ -17,7 +18,8 @@ export async function ingestPdf(input: IngestInput) {
   // entirely instead of re-parsing the PDF from scratch every time.
   const markdownUrl = await uploadMarkdown(input.fileName, markdown);
 
-  const { chunkCount, title } = await createEmbeddings(input.fileName, blob, markdown);
+  const chunkContexts = await contextualizeChunks(input.fileName, markdown);
+  const { chunkCount, title } = await createEmbeddings(input.fileName, blob, markdown, chunkContexts);
 
   // Separate step from createEmbeddings: extraction is the expensive, flaky
   // part, and a retry here shouldn't re-embed every chunk. It re-derives

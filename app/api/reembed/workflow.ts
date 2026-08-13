@@ -1,6 +1,7 @@
 import { BlobInfo, updateUploadAfterReembed } from "../upload/steps/recordUpload";
 import { uploadMarkdown } from "../upload/steps/uploadFile";
 import { createMarkdown, fetchMarkdown } from "../upload/steps/pdfReader";
+import { contextualizeChunks } from "../upload/steps/contextualizeChunks";
 import { createEmbeddings } from "../upload/steps/createEmbeddings";
 import { extractGraph } from "../upload/steps/extractGraph";
 
@@ -30,7 +31,8 @@ export async function reembedDocument(input: ReembedInput) {
     : await createMarkdown(input.blobUrl);
   const markdownUrl = input.markdownUrl ?? (await uploadMarkdown(input.fileName, markdown));
 
-  const { chunkCount, title } = await createEmbeddings(input.fileName, blob, markdown);
+  const chunkContexts = await contextualizeChunks(input.fileName, markdown);
+  const { chunkCount, title } = await createEmbeddings(input.fileName, blob, markdown, chunkContexts);
 
   // Re-extracting the graph from the same markdown keeps chunkId boundaries
   // in sync between Upstash and Neo4j — see the chunking invariant in CLAUDE.md.

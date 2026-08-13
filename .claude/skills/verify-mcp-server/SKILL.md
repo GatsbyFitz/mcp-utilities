@@ -1,6 +1,8 @@
 ---
 name: verify-mcp-server
 description: This skill should be used when the user asks to "verify the MCP server", "test the MCP server", "check that MCP still works", or after any change to app/mcp/**/*.ts (tools, prompts, or resources) before considering the change done. Runs type-check, lint, and raw JSON-RPC calls against the local dev server to confirm tools/prompts/resources all still register and respond correctly.
+allowed-tools: [Bash, Read]
+model: sonnet
 ---
 
 # Verify MCP server
