@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { RefreshCw, Sparkles, Trash2 } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, LogOut } from "lucide-react";
+import { signOut } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -219,8 +220,15 @@ export default function UploadPage() {
         />
       </div>
 
+      <div className="relative z-10 mx-auto flex w-full max-w-7xl justify-end">
+        <Button variant="outline" size="sm" onClick={() => signOut({ callbackUrl: "/login" })}>
+          <LogOut />
+          Sign out
+        </Button>
+      </div>
+
       {/* Top-aligned two-column layout: upload 1/3, table 2/3 and grows */}
-      <div className="relative z-10 mx-auto flex w-full max-w-7xl flex-col gap-6 lg:flex-row lg:items-start">
+      <div className="relative z-10 mx-auto mt-4 flex w-full max-w-7xl flex-col gap-6 lg:flex-row lg:items-start">
         <Card className="w-full lg:w-1/3 lg:shrink-0">
           <CardHeader>
             <CardTitle>Upload Documents</CardTitle>
