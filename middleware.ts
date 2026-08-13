@@ -19,7 +19,7 @@ export async function middleware(request: NextRequest) {
   }
 
   if (PROTECTED_PATHS.includes(request.nextUrl.pathname)) {
-    const token = await getToken({ req: request });
+    const token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET });
     if (!token) {
       const loginUrl = new URL("/login", request.url);
       loginUrl.searchParams.set("callbackUrl", request.nextUrl.pathname);
