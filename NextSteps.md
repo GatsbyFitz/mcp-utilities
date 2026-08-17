@@ -1,11 +1,12 @@
 ## Backlog
 ### High
-- Build Knowledgebase
-- Publish Tool
+- Build Knowledgebase with 50 Documents
+- Publish MCP Server
 
 ### Med
 - Implement a Researcher Agent - With SubAgents (maybe using vercel eve)
 - Implement image intelligence to save images and retrieve when required
+- Implement a request doc tool
 - Semantic based chunking strategy
 - Explore reranking improvements
 - Add an ingestion workflow visualisation using https://elements.ai-sdk.dev/examples/workflow
@@ -21,6 +22,7 @@
 ✓ Implement Prompts into the MCP
 ✓ Implement Claude Code Commands for Confirming Embedding and Graph Database integrity 
 ✓ Contextual Retrieval Pre-Processing
+✓ Added NextAuth to upload pathway
 
 
 ### Trashed

@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+For a feature-level overview of what the MCP server exposes (tools, prompts, resources) and the ingestion pipeline that feeds it, see [README.md](README.md).
+
 ## Conventions
 
 This file covers what the system *is*; conventions cover what to *do*. Two mechanisms, loaded differently:

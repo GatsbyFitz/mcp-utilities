@@ -10,14 +10,6 @@ const resourceUri = "ui://get-time/mcp-app-v19.html";
 
 async function fetchPageHtml(path: string): Promise<string> {
   const url = `${baseURL}${path}`;
-  console.log("[get-time-app] Fetching:", url);
-  console.log("[DEBUG] baseURL:", baseURL);
-  console.log("[DEBUG] Full URL:", url);
-  console.log("[DEBUG] NODE_ENV:", process.env.NODE_ENV);
-  console.log("[DEBUG] VERCEL_ENV:", process.env.VERCEL_ENV);
-  console.log("[DEBUG] VERCEL_PROJECT_PRODUCTION_URL:", process.env.VERCEL_PROJECT_PRODUCTION_URL);
-  console.log("[DEBUG] VERCEL_BRANCH_URL:", process.env.VERCEL_BRANCH_URL);
-  console.log("[DEBUG] VERCEL_URL:", process.env.VERCEL_URL);
   
   try {
     const res = await fetch(url);
@@ -39,55 +31,55 @@ async function fetchPageHtml(path: string): Promise<string> {
 }
 
 
-export function registerGetTimeApp(server: any): void {
-  registerAppResource(
-    server,
-    "get-time-app-ui",
-    resourceUri,
-    {
-      title: "Get Time App UI",
-      description: "Interactive UI for get-time tool",
-      mimeType: RESOURCE_MIME_TYPE,
-    },
-    async () => {
-      const html = await fetchPageHtml("/test");
-      return {
-        contents: [
-          {
-            uri: resourceUri,
-            mimeType: RESOURCE_MIME_TYPE,
-            text: html, // Serves the bundle instantly
-            _meta: {
-              ui: {
-                csp: {
-                  connectDomains: [baseURL], 
-                  resourceDomains: [baseURL],
-                },
-              },
-            },
-          },
-        ],
-      };
-    }
-  );
+// export function registerGetTimeApp(server: any): void {
+//   registerAppResource(
+//     server,
+//     "get-time-app-ui",
+//     resourceUri,
+//     {
+//       title: "Get Time App UI",
+//       description: "Interactive UI for get-time tool",
+//       mimeType: RESOURCE_MIME_TYPE,
+//     },
+//     async () => {
+//       const html = await fetchPageHtml("/test");
+//       return {
+//         contents: [
+//           {
+//             uri: resourceUri,
+//             mimeType: RESOURCE_MIME_TYPE,
+//             text: html, // Serves the bundle instantly
+//             _meta: {
+//               ui: {
+//                 csp: {
+//                   connectDomains: [baseURL], 
+//                   resourceDomains: [baseURL],
+//                 },
+//               },
+//             },
+//           },
+//         ],
+//       };
+//     }
+//   );
 
-  registerAppTool(
-    server,
-    "get_time_app",
-    {
-      title: "Get Time",
-      description: "Returns current server time and opens app UI.",
-      inputSchema: z.object({}),
-      _meta: {
-        ui: { resourceUri: resourceUri },
-      },
-    },
-    async () => {
-      const time = new Date().toISOString();
-      return {
-        content: [{ type: "text" as const, text: time }],
-        structuredContent: { time },
-      };
-    }
-  );
-}
+//   registerAppTool(
+//     server,
+//     "get_time_app",
+//     {
+//       title: "Get Time",
+//       description: "Returns current server time and opens app UI.",
+//       inputSchema: z.object({}),
+//       _meta: {
+//         ui: { resourceUri: resourceUri },
+//       },
+//     },
+//     async () => {
+//       const time = new Date().toISOString();
+//       return {
+//         content: [{ type: "text" as const, text: time }],
+//         structuredContent: { time },
+//       };
+//     }
+//   );
+// }
