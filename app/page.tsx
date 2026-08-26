@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { RefreshCw, Sparkles, Trash2, LogOut } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { signOut } from "next-auth/react";
+import { INGEST_STEPS, isTerminalRunStatus, type IngestRunProgress } from "@/lib/ingestSteps";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -39,6 +40,18 @@ type KnowledgeBase = {
   items: KnowledgeBaseItem[];
 };
 
+// A run the page is following. The file name only exists client-side — the
+// status endpoint deals purely in run IDs.
+type TrackedRun = {
+  runId: string;
+  fileName: string;
+};
+
+// Run IDs are not persisted server-side, so they survive a reload only as far
+// as this tab's sessionStorage does.
+const TRACKED_RUNS_KEY = "ingestRuns";
+const POLL_INTERVAL_MS = 2000;
+
 function formatBytes(bytes: number): string {
   if (!bytes) return "—";
   const units = ["B", "KB", "MB", "GB"];
@@ -62,6 +75,8 @@ export default function UploadPage() {
   const [reembeddingId, setReembeddingId] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [trackedRuns, setTrackedRuns] = useState<TrackedRun[]>([]);
+  const [runProgress, setRunProgress] = useState<Record<string, IngestRunProgress>>({});
 
   const refreshKnowledgeBase = useCallback(async () => {
     setRefreshing(true);
@@ -81,6 +96,67 @@ export default function UploadPage() {
   useEffect(() => {
     refreshKnowledgeBase();
   }, [refreshKnowledgeBase]);
+
+  // Recover runs from a reload mid-ingestion. Anything the runtime has since
+  // forgotten comes back as "unknown" and simply stops being polled.
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem(TRACKED_RUNS_KEY);
+      if (stored) setTrackedRuns(JSON.parse(stored) as TrackedRun[]);
+    } catch (error) {
+      console.error("Error reading tracked runs:", error);
+    }
+  }, []);
+
+  // Polls until every tracked run reaches a terminal state, then refreshes the
+  // knowledge base once — this is the point at which recordUpload has actually
+  // written the rows.
+  useEffect(() => {
+    if (trackedRuns.length === 0) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function poll() {
+      try {
+        const params = new URLSearchParams();
+        for (const run of trackedRuns) params.append("runId", run.runId);
+
+        const res = await fetch(`/api/uploadStatus?${params.toString()}`, {
+          cache: "no-store",
+        });
+        const data = await res.json();
+        if (cancelled) return;
+
+        if (res.ok && data.success) {
+          const runs = data.runs as IngestRunProgress[];
+          setRunProgress(Object.fromEntries(runs.map((run) => [run.runId, run])));
+
+          if (runs.every((run) => isTerminalRunStatus(run.status))) {
+            try {
+              sessionStorage.removeItem(TRACKED_RUNS_KEY);
+            } catch {
+              // Nothing to recover from — the runs are already finished.
+            }
+            refreshKnowledgeBase();
+            return;
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching ingestion status:", error);
+      }
+
+      // Scheduled only after a response, so polls can never overlap.
+      if (!cancelled) timer = setTimeout(poll, POLL_INTERVAL_MS);
+    }
+
+    poll();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [trackedRuns, refreshKnowledgeBase]);
 
   async function postReembed(id?: string) {
     const res = await fetch("/api/reembed", {
@@ -188,7 +264,21 @@ export default function UploadPage() {
     if (res.ok) {
       setStatus("success");
       setMessage(`Queued ${data.fileCount} file(s) for processing`);
-      refreshKnowledgeBase();
+
+      // Deliberately no refreshKnowledgeBase() here: recordUpload is the last
+      // of seven steps, so the rows cannot exist yet. The poll below refreshes
+      // once the runs actually finish.
+      const started = (data.runs ?? []) as TrackedRun[];
+      setTrackedRuns((previous) => {
+        const known = new Set(previous.map((run) => run.runId));
+        const next = [...previous, ...started.filter((run) => !known.has(run.runId))];
+        try {
+          sessionStorage.setItem(TRACKED_RUNS_KEY, JSON.stringify(next));
+        } catch {
+          // Progress still works in this tab; only reload recovery is lost.
+        }
+        return next;
+      });
     } else {
       setStatus("error");
       setMessage(data.error ?? "Upload failed");
@@ -229,28 +319,50 @@ export default function UploadPage() {
 
       {/* Top-aligned two-column layout: upload 1/3, table 2/3 and grows */}
       <div className="relative z-10 mx-auto mt-4 flex w-full max-w-7xl flex-col gap-6 lg:flex-row lg:items-start">
-        <Card className="w-full lg:w-1/3 lg:shrink-0">
-          <CardHeader>
-            <CardTitle>Upload Documents</CardTitle>
-            <CardDescription>Add PDFs to the RAG database</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="file">Files</Label>
-                <Input id="file" name="file" type="file" accept=".pdf" multiple required />
-              </div>
-              <Button type="submit" className="w-full" disabled={status === "loading"}>
-                {status === "loading" ? "Uploading..." : "Upload"}
-              </Button>
-              {message && (
-                <p className={`text-sm ${status === "success" ? "text-green-400" : "text-red-400"}`}>
-                  {message}
-                </p>
-              )}
-            </form>
-          </CardContent>
-        </Card>
+        <div className="flex w-full flex-col gap-6 lg:w-1/3 lg:shrink-0">
+          <Card>
+            <CardHeader>
+              <CardTitle>Upload Documents</CardTitle>
+              <CardDescription>Add PDFs to the RAG database</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="file">Files</Label>
+                  <Input id="file" name="file" type="file" accept=".pdf" multiple required />
+                </div>
+                <Button type="submit" className="w-full" disabled={status === "loading"}>
+                  {status === "loading" ? "Uploading..." : "Upload"}
+                </Button>
+                {message && (
+                  <p className={`text-sm ${status === "success" ? "text-green-400" : "text-red-400"}`}>
+                    {message}
+                  </p>
+                )}
+              </form>
+            </CardContent>
+          </Card>
+
+          {trackedRuns.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Ingestion Progress</CardTitle>
+                <CardDescription>
+                  Live status of each file moving through the pipeline
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                {trackedRuns.map((run) => (
+                  <IngestProgress
+                    key={run.runId}
+                    fileName={run.fileName}
+                    progress={runProgress[run.runId]}
+                  />
+                ))}
+              </CardContent>
+            </Card>
+          )}
+        </div>
 
         <Card className="w-full min-w-0 lg:flex-1">
           <CardHeader>
@@ -367,5 +479,86 @@ export default function UploadPage() {
         </Card>
       </div>
     </main>
+  );
+}
+
+// One file's journey through the ingestion workflow. `progress` is undefined
+// until the first poll lands, which is the "Queued" state.
+function IngestProgress({
+  fileName,
+  progress,
+}: {
+  fileName: string;
+  progress: IngestRunProgress | undefined;
+}) {
+  const failed = progress?.status === "failed" || progress?.status === "cancelled";
+  const done = progress?.status === "completed";
+  // The runtime no longer knows this run — it expired, or the deployment moved on.
+  const unknown = progress?.status === "unknown";
+  const retryingStep = progress?.steps.find(
+    (step) => (step.status === "running" || step.status === "failed") && step.attempt > 1
+  );
+
+  let detail: string;
+  if (!progress) {
+    detail = "Queued";
+  } else if (done) {
+    detail = "Complete";
+  } else if (failed) {
+    detail = progress.failedStepLabel
+      ? `Failed during ${progress.failedStepLabel.toLowerCase()}`
+      : "Failed";
+  } else if (unknown) {
+    detail = "Status no longer available";
+  } else if (progress.currentStepLabel) {
+    detail = `Step ${progress.completedCount + 1} of ${progress.totalCount} · ${progress.currentStepLabel}`;
+  } else {
+    detail = "Starting";
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <span className="min-w-0 truncate text-sm font-medium" title={fileName}>
+          {fileName}
+        </span>
+        {done ? (
+          <CheckCircle2 className="size-4 shrink-0 text-green-400" />
+        ) : failed || unknown ? (
+          <AlertCircle className="size-4 shrink-0 text-red-400" />
+        ) : (
+          <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+        )}
+      </div>
+
+      <div className="flex gap-1" aria-hidden="true">
+        {(progress?.steps ??
+          INGEST_STEPS.map((step) => ({ ...step, status: "pending" as const, attempt: 1 }))
+        ).map((step) => (
+          <div
+            key={step.name}
+            className={`h-1.5 flex-1 rounded-full ${
+              step.status === "completed"
+                ? "bg-green-400"
+                : step.status === "running"
+                  ? "animate-pulse bg-white"
+                  : step.status === "failed" || step.status === "cancelled"
+                    ? "bg-red-400"
+                    : "bg-white/15"
+            }`}
+            title={`${step.label}: ${step.status}`}
+          />
+        ))}
+      </div>
+
+      <p
+        className={`text-xs ${
+          failed || unknown ? "text-red-400" : done ? "text-green-400" : "text-muted-foreground"
+        }`}
+      >
+        {detail}
+        {retryingStep && ` · retry ${retryingStep.attempt}`}
+      </p>
+    </div>
   );
 }
