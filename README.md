@@ -49,11 +49,31 @@ See [.claude/conventions/](.claude/conventions/) for the full architecture write
 
 `createEmbeddings` and `extractGraph` chunk independently but must agree on chunk boundaries and IDs (`lib/chunking.ts` is the single source of truth) — `search_graph` uses a chunk's `chunkId` to fetch its text straight out of the vector index.
 
+### Duplicate uploads
+
+`POST /api/upload` rejects a file whose name already exists in the `uploads` table, comparing case-insensitively and ignoring surrounding whitespace, and also collapses the same name repeated within one batch. The rest of the batch still ingests; the response carries `skipped: string[]` alongside `fileCount` and `runs`, and the upload page lists the skipped names.
+
+This is a name check rather than a content check because the file name *is* the document's identity downstream: chunk IDs are `${fileName}-${index}`, vector metadata carries `source = fileName`, and graph edges carry `sourceDoc = fileName`. Two documents sharing a name overwrite each other's chunks and edges, and deleting either one wipes both. If the duplicate lookup itself fails the request fails closed — nothing is ingested — since a duplicate corrupts the existing document. To replace a document, delete it first; the Delete action already removes the blob, row, vectors and graph.
+
+Two same-named files uploaded in separate requests within seconds of each other can still both start, since the `uploads` row is only written by `recordUpload` at the very end. A unique index on `LOWER(TRIM(name))` in Neon would close that race, but nothing in this repo creates the table.
+
 ### Progress tracking
 
 `POST /api/upload` returns a `runs` array pairing each file name with its workflow run ID. `GET /api/uploadStatus?runId=…` (auth-gated, repeatable param) resolves those IDs live against the workflow runtime — `getRun()` for the run status and `getWorld().steps.list()` for per-step status and retry attempt — and folds them against the ordered step list in [lib/ingestSteps.ts](lib/ingestSteps.ts). The upload page polls it every 2s and renders a per-file progress bar, refreshing the knowledge-base table only once the runs reach a terminal state (the rows do not exist until `recordUpload`, the final step).
 
 Nothing about a run is persisted: status comes from the runtime on each request, so run IDs live only in the browser tab that started the upload (mirrored to `sessionStorage` for reload recovery). A run the runtime no longer knows about reports as `unknown`. Vercel's own dashboard (Project → Observability → Workflows) remains the deeper view for debugging.
+
+Each step carries the runtime's own failure message (`error.message` / `error.code`), not just which step failed, so the UI can show *why* embedding failed rather than only *that* it did. Stack traces stay in the server log.
+
+### Retrying a failed ingestion
+
+A failed run is terminal — the runtime will not resume it in place, and re-enqueueing one is a no-op. Instead, `ingestPdf` records a **resume point** (`markResumePoint`) into the workflow journal as soon as the Markdown is persisted: the file name, size, blob URLs and Markdown URL, all in one small step output.
+
+`POST /api/retryUpload { runId }` reads that one step (resolving only it — every other step's serialized input carries the whole PDF or the whole Markdown) and starts a `resumeIngest` run from it. That workflow fetches the saved Markdown and runs contextualise → embed → extract graph → record, so **neither the upload nor the Gemini PDF→Markdown parse runs again**. The response returns the new run ID, which the client tracks in place of the old one.
+
+`uploadStatus` reports `resumable: true` only for a failed run that reached the resume point. A run that failed earlier — during upload or the parse itself — has no saved Markdown to reuse, so retry is refused with a 409 and the file must be uploaded again.
+
+`resumeIngest`'s tail is deliberately identical to `ingestPdf`'s and `reembedDocument`'s: same steps, same order, so chunk boundaries and IDs stay in sync between Upstash and Neo4j. Keep all three in step.
 
 ## MCP server features
 

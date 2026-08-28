@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { INGEST_STEPS, isTerminalRunStatus, type IngestRunProgress } from "@/lib/ingestSteps";
 import { Button } from "@/components/ui/button";
@@ -77,6 +77,8 @@ export default function UploadPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [trackedRuns, setTrackedRuns] = useState<TrackedRun[]>([]);
   const [runProgress, setRunProgress] = useState<Record<string, IngestRunProgress>>({});
+  const [skippedFiles, setSkippedFiles] = useState<string[]>([]);
+  const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
 
   const refreshKnowledgeBase = useCallback(async () => {
     setRefreshing(true);
@@ -157,6 +159,49 @@ export default function UploadPage() {
       if (timer) clearTimeout(timer);
     };
   }, [trackedRuns, refreshKnowledgeBase]);
+
+  // Retries a failed ingestion from the Markdown it already persisted. The
+  // runtime cannot resume a failed run in place, so the server starts a fresh
+  // run; we swap the tracked run ID for the new one, which restarts polling.
+  async function handleRetry(runId: string) {
+    setRetryingRunId(runId);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/retryUpload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Retry failed: ${res.status}`);
+      }
+
+      setTrackedRuns((previous) => {
+        const next = previous.map((run) =>
+          run.runId === runId ? { ...run, runId: data.runId as string } : run
+        );
+        try {
+          sessionStorage.setItem(TRACKED_RUNS_KEY, JSON.stringify(next));
+        } catch {
+          // Progress still works in this tab; only reload recovery is lost.
+        }
+        return next;
+      });
+      setRunProgress((previous) => {
+        const next = { ...previous };
+        delete next[runId];
+        return next;
+      });
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Retry failed",
+        error: true,
+      });
+    } finally {
+      setRetryingRunId(null);
+    }
+  }
 
   async function postReembed(id?: string) {
     const res = await fetch("/api/reembed", {
@@ -252,6 +297,7 @@ export default function UploadPage() {
 
     setStatus("loading");
     setMessage("");
+    setSkippedFiles([]);
 
     const formData = new FormData();
     for (const file of Array.from(files)) {
@@ -263,7 +309,12 @@ export default function UploadPage() {
 
     if (res.ok) {
       setStatus("success");
-      setMessage(`Queued ${data.fileCount} file(s) for processing`);
+      setSkippedFiles((data.skipped ?? []) as string[]);
+      setMessage(
+        data.fileCount > 0
+          ? `Queued ${data.fileCount} file(s) for processing`
+          : "Nothing to upload — every file is already in the knowledge base"
+      );
 
       // Deliberately no refreshKnowledgeBase() here: recordUpload is the last
       // of seven steps, so the rows cannot exist yet. The poll below refreshes
@@ -339,6 +390,12 @@ export default function UploadPage() {
                     {message}
                   </p>
                 )}
+                {skippedFiles.length > 0 && (
+                  <p className="text-sm text-amber-400">
+                    Skipped {skippedFiles.length} already in the knowledge base:{" "}
+                    {skippedFiles.join(", ")}
+                  </p>
+                )}
               </form>
             </CardContent>
           </Card>
@@ -357,6 +414,8 @@ export default function UploadPage() {
                     key={run.runId}
                     fileName={run.fileName}
                     progress={runProgress[run.runId]}
+                    retrying={retryingRunId === run.runId}
+                    onRetry={() => handleRetry(run.runId)}
                   />
                 ))}
               </CardContent>
@@ -487,9 +546,13 @@ export default function UploadPage() {
 function IngestProgress({
   fileName,
   progress,
+  retrying,
+  onRetry,
 }: {
   fileName: string;
   progress: IngestRunProgress | undefined;
+  retrying: boolean;
+  onRetry: () => void;
 }) {
   const failed = progress?.status === "failed" || progress?.status === "cancelled";
   const done = progress?.status === "completed";
@@ -559,6 +622,35 @@ function IngestProgress({
         {detail}
         {retryingStep && ` · retry ${retryingStep.attempt}`}
       </p>
+
+      {/* The runtime's own message for the failing step — the actual reason,
+          rather than just which step it was. */}
+      {progress?.error && (
+        <p className="rounded border border-red-400/30 bg-red-400/10 px-2 py-1 font-mono text-[11px] leading-snug break-words text-red-300">
+          {progress.error.code ? `${progress.error.code}: ` : ""}
+          {progress.error.message}
+        </p>
+      )}
+
+      {progress?.resumable && (
+        <div className="space-y-1">
+          <Button variant="outline" size="sm" onClick={onRetry} disabled={retrying}>
+            <RotateCw className={retrying ? "animate-spin" : ""} />
+            {retrying ? "Retrying..." : "Retry from saved Markdown"}
+          </Button>
+          <p className="text-[11px] text-muted-foreground">
+            Skips the upload and the PDF→Markdown conversion.
+          </p>
+        </div>
+      )}
+
+      {/* Failed with no resume point: the run died before the Markdown was
+          saved, so there is nothing cheaper to restart from. */}
+      {failed && !progress?.resumable && (
+        <p className="text-[11px] text-muted-foreground">
+          Failed before the Markdown was saved — upload the file again to retry.
+        </p>
+      )}
     </div>
   );
 }
