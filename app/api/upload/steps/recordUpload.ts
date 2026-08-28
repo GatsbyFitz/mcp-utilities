@@ -16,8 +16,13 @@ export interface BlobInfo {
   pathname: string;
 }
 
+// Takes the name and size directly rather than the whole IngestInput: the PDF
+// bytes on that object are unused here, and a step's arguments are serialized
+// into the workflow journal, so passing them would persist the entire document
+// a second time for a step that only writes a row.
 export async function recordUpload(
-  input: IngestInput,
+  fileName: string,
+  sizeBytes: number,
   blob: BlobInfo,
   chunkCount: number,
   markdownUrl: string
@@ -27,7 +32,7 @@ export async function recordUpload(
   await sql`
     INSERT INTO uploads (id, name, chunks, size_bytes, uploaded_at, blob_url, blob_download_url, blob_path, markdown_url)
     VALUES (
-      ${uuidv4()}, ${input.fileName}, ${chunkCount}, ${input.sizeBytes},
+      ${uuidv4()}, ${fileName}, ${chunkCount}, ${sizeBytes},
       NOW(), ${blob.url}, ${blob.downloadUrl}, ${blob.pathname}, ${markdownUrl}
     )
   `;

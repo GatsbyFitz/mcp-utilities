@@ -63,6 +63,18 @@ Two same-named files uploaded in separate requests within seconds of each other 
 
 Nothing about a run is persisted: status comes from the runtime on each request, so run IDs live only in the browser tab that started the upload (mirrored to `sessionStorage` for reload recovery). A run the runtime no longer knows about reports as `unknown`. Vercel's own dashboard (Project → Observability → Workflows) remains the deeper view for debugging.
 
+Each step carries the runtime's own failure message (`error.message` / `error.code`), not just which step failed, so the UI can show *why* embedding failed rather than only *that* it did. Stack traces stay in the server log.
+
+### Retrying a failed ingestion
+
+A failed run is terminal — the runtime will not resume it in place, and re-enqueueing one is a no-op. Instead, `ingestPdf` records a **resume point** (`markResumePoint`) into the workflow journal as soon as the Markdown is persisted: the file name, size, blob URLs and Markdown URL, all in one small step output.
+
+`POST /api/retryUpload { runId }` reads that one step (resolving only it — every other step's serialized input carries the whole PDF or the whole Markdown) and starts a `resumeIngest` run from it. That workflow fetches the saved Markdown and runs contextualise → embed → extract graph → record, so **neither the upload nor the Gemini PDF→Markdown parse runs again**. The response returns the new run ID, which the client tracks in place of the old one.
+
+`uploadStatus` reports `resumable: true` only for a failed run that reached the resume point. A run that failed earlier — during upload or the parse itself — has no saved Markdown to reuse, so retry is refused with a 409 and the file must be uploaded again.
+
+`resumeIngest`'s tail is deliberately identical to `ingestPdf`'s and `reembedDocument`'s: same steps, same order, so chunk boundaries and IDs stay in sync between Upstash and Neo4j. Keep all three in step.
+
 ## MCP server features
 
 Everything below is registered in `app/mcp/tools/index.ts`, `app/mcp/prompts/index.ts`, and `app/mcp/resources/index.ts`, then wired together in `app/mcp/route.ts`.
