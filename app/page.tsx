@@ -77,6 +77,7 @@ export default function UploadPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [trackedRuns, setTrackedRuns] = useState<TrackedRun[]>([]);
   const [runProgress, setRunProgress] = useState<Record<string, IngestRunProgress>>({});
+  const [skippedFiles, setSkippedFiles] = useState<string[]>([]);
 
   const refreshKnowledgeBase = useCallback(async () => {
     setRefreshing(true);
@@ -252,6 +253,7 @@ export default function UploadPage() {
 
     setStatus("loading");
     setMessage("");
+    setSkippedFiles([]);
 
     const formData = new FormData();
     for (const file of Array.from(files)) {
@@ -263,7 +265,12 @@ export default function UploadPage() {
 
     if (res.ok) {
       setStatus("success");
-      setMessage(`Queued ${data.fileCount} file(s) for processing`);
+      setSkippedFiles((data.skipped ?? []) as string[]);
+      setMessage(
+        data.fileCount > 0
+          ? `Queued ${data.fileCount} file(s) for processing`
+          : "Nothing to upload — every file is already in the knowledge base"
+      );
 
       // Deliberately no refreshKnowledgeBase() here: recordUpload is the last
       // of seven steps, so the rows cannot exist yet. The poll below refreshes
@@ -337,6 +344,12 @@ export default function UploadPage() {
                 {message && (
                   <p className={`text-sm ${status === "success" ? "text-green-400" : "text-red-400"}`}>
                     {message}
+                  </p>
+                )}
+                {skippedFiles.length > 0 && (
+                  <p className="text-sm text-amber-400">
+                    Skipped {skippedFiles.length} already in the knowledge base:{" "}
+                    {skippedFiles.join(", ")}
                   </p>
                 )}
               </form>
