@@ -49,6 +49,12 @@ See [.claude/conventions/](.claude/conventions/) for the full architecture write
 
 `createEmbeddings` and `extractGraph` chunk independently but must agree on chunk boundaries and IDs (`lib/chunking.ts` is the single source of truth) — `search_graph` uses a chunk's `chunkId` to fetch its text straight out of the vector index.
 
+### Progress tracking
+
+`POST /api/upload` returns a `runs` array pairing each file name with its workflow run ID. `GET /api/uploadStatus?runId=…` (auth-gated, repeatable param) resolves those IDs live against the workflow runtime — `getRun()` for the run status and `getWorld().steps.list()` for per-step status and retry attempt — and folds them against the ordered step list in [lib/ingestSteps.ts](lib/ingestSteps.ts). The upload page polls it every 2s and renders a per-file progress bar, refreshing the knowledge-base table only once the runs reach a terminal state (the rows do not exist until `recordUpload`, the final step).
+
+Nothing about a run is persisted: status comes from the runtime on each request, so run IDs live only in the browser tab that started the upload (mirrored to `sessionStorage` for reload recovery). A run the runtime no longer knows about reports as `unknown`. Vercel's own dashboard (Project → Observability → Workflows) remains the deeper view for debugging.
+
 ## MCP server features
 
 Everything below is registered in `app/mcp/tools/index.ts`, `app/mcp/prompts/index.ts`, and `app/mcp/resources/index.ts`, then wired together in `app/mcp/route.ts`.
