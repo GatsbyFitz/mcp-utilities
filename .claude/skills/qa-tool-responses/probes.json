@@ -1,0 +1,101 @@
+{
+  "$comment": "Curated probes for the tool-response QA routine. Per-document probes are added at run time from kb://documents, so this file only needs the cases that cannot be derived: exact-term retrieval, the empty path, schema enforcement, and the repeat call used for the determinism check. Keep `query` values answerable from the ingested corpus — a probe nobody can answer proves nothing.",
+  "budget": {
+    "maxTextBytes": 24000,
+    "minTopScore": 0.3,
+    "relationCap": 30
+  },
+  "maxDocumentProbes": 4,
+  "probes": [
+    {
+      "id": "docs-primary",
+      "tool": "search_docs",
+      "arguments": { "query": "who must provide NMI standing data to AEMO", "topK": 25, "topN": 8 },
+      "expect": "results",
+      "determinismKey": "primary",
+      "note": "Default arguments — the shape a model actually calls with."
+    },
+    {
+      "id": "docs-primary-repeat",
+      "tool": "search_docs",
+      "arguments": { "query": "who must provide NMI standing data to AEMO", "topK": 25, "topN": 8 },
+      "expect": "results",
+      "determinismKey": "primary",
+      "quick": false,
+      "note": "Byte-identical repeat of docs-primary. Feeds consistency.determinism; retrieval that reorders between calls makes an answer unreproducible."
+    },
+    {
+      "id": "docs-exact-term",
+      "tool": "search_docs",
+      "arguments": { "query": "CATS_NMI_DATA field definitions", "topK": 20, "topN": 4 },
+      "expect": "results",
+      "note": "Exercises the sparse/IDF half of hybrid search. A document code or table name is exactly what dense-only retrieval loses; if this degrades, lib/sparse.ts has drifted between the ingest and query sides."
+    },
+    {
+      "id": "docs-absent",
+      "tool": "search_docs",
+      "arguments": { "query": "sourdough starter hydration ratios", "topK": 10, "topN": 3 },
+      "expect": "empty",
+      "note": "Nothing in an energy-market corpus answers this. Checks the empty path is honest rather than returning weak matches with confident framing."
+    },
+    {
+      "id": "docs-min-query",
+      "tool": "search_docs",
+      "arguments": { "query": "AEMO", "topK": 5, "topN": 2 },
+      "expect": "results",
+      "quick": false,
+      "note": "Short, extremely common term — the case most likely to return topN near-duplicates."
+    },
+    {
+      "id": "docs-reject-topk",
+      "tool": "search_docs",
+      "arguments": { "query": "metering obligations", "topK": 999 },
+      "expect": "rejected",
+      "note": "topK is schema-bounded 1-100. Must be rejected, not silently clamped or passed to Upstash."
+    },
+    {
+      "id": "docs-reject-short-query",
+      "tool": "search_docs",
+      "arguments": { "query": "a" },
+      "expect": "rejected",
+      "quick": false,
+      "note": "query has min length 2."
+    },
+    {
+      "id": "graph-primary",
+      "tool": "search_graph",
+      "arguments": { "query": "obligations between AEMO and metering providers", "maxHops": 2, "maxChunks": 5 },
+      "expect": "results",
+      "note": "The relational question search_graph's description claims as its speciality."
+    },
+    {
+      "id": "graph-onehop",
+      "tool": "search_graph",
+      "arguments": { "query": "who prepares the metering data substitution guideline", "maxHops": 1, "maxChunks": 3 },
+      "expect": "results",
+      "quick": false,
+      "note": "maxHops=1 must actually constrain traversal; every returned relation should report hops=1."
+    },
+    {
+      "id": "graph-absent",
+      "tool": "search_graph",
+      "arguments": { "query": "sourdough starter hydration ratios", "maxHops": 2, "maxChunks": 3 },
+      "expect": "empty",
+      "note": "The 0.6 seed-similarity floor should hold here. If this returns relations, the floor is too loose and the graph will answer anything."
+    },
+    {
+      "id": "graph-reject-hops",
+      "tool": "search_graph",
+      "arguments": { "query": "metering obligations", "maxHops": 5 },
+      "expect": "rejected",
+      "note": "maxHops is clamped 1-2 in the schema because it is interpolated into Cypher. A silent accept here is the one input that reaches the query string."
+    },
+    {
+      "id": "echo",
+      "tool": "echo",
+      "arguments": { "message": "qa-tool-responses" },
+      "expect": "results",
+      "note": "Touches no external service. If this fails, the problem is transport or registration, not retrieval quality."
+    }
+  ]
+}

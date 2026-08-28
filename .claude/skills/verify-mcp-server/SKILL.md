@@ -9,6 +9,8 @@ model: sonnet
 
 Confirms a change under `app/mcp/**` didn't break registration or runtime behavior, by exercising the server the same way a real MCP client would — raw JSON-RPC over HTTP against the local dev server — rather than trusting Claude Code's own tool surfacing, which only refreshes at session start (see [commands.md](../../conventions/commands.md)).
 
+This skill checks that the tools *work*. It does not look at whether the results are any good — no relevance, citation-accuracy, or response-hygiene checks. That is [/qa-tool-responses](../qa-tool-responses/SKILL.md), which is worth running after this one passes.
+
 ## Preconditions
 
 - `pnpm dev` must be running on `http://localhost:3000`. Start it in the background if it isn't up; don't ask the user to do this manually.
