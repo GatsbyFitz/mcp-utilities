@@ -304,36 +304,58 @@ export default function UploadPage() {
       formData.append("files", file);
     }
 
-    const res = await fetch("/api/upload", { method: "POST", body: formData });
-    const data = await res.json();
-
-    if (res.ok) {
-      setStatus("success");
-      setSkippedFiles((data.skipped ?? []) as string[]);
-      setMessage(
-        data.fileCount > 0
-          ? `Queued ${data.fileCount} file(s) for processing`
-          : "Nothing to upload — every file is already in the knowledge base"
-      );
-
-      // Deliberately no refreshKnowledgeBase() here: recordUpload is the last
-      // of seven steps, so the rows cannot exist yet. The poll below refreshes
-      // once the runs actually finish.
-      const started = (data.runs ?? []) as TrackedRun[];
-      setTrackedRuns((previous) => {
-        const known = new Set(previous.map((run) => run.runId));
-        const next = [...previous, ...started.filter((run) => !known.has(run.runId))];
-        try {
-          sessionStorage.setItem(TRACKED_RUNS_KEY, JSON.stringify(next));
-        } catch {
-          // Progress still works in this tab; only reload recovery is lost.
-        }
-        return next;
-      });
-    } else {
+    // Not every failure comes back as JSON. A request over Vercel's 4.5 MB
+    // function payload limit is rejected at the platform edge with an HTML
+    // error page, so res.json() throws a SyntaxError before res.ok is ever
+    // checked — which left the button stuck on "Uploading..." forever.
+    let res: Response;
+    let data: Record<string, unknown> = {};
+    try {
+      res = await fetch("/api/upload", { method: "POST", body: formData });
+      const body = await res.text();
+      try {
+        data = body ? JSON.parse(body) : {};
+      } catch {
+        data = {};
+      }
+    } catch (error) {
       setStatus("error");
-      setMessage(data.error ?? "Upload failed");
+      setMessage(error instanceof Error ? error.message : "Upload failed");
+      return;
     }
+
+    if (!res.ok) {
+      setStatus("error");
+      setMessage(
+        res.status === 413
+          ? "Upload too large — Vercel caps a request body at 4.5 MB, and that limit covers all selected files together."
+          : (data.error as string) ?? `Upload failed (${res.status})`
+      );
+      return;
+    }
+
+    setStatus("success");
+    setSkippedFiles((data.skipped ?? []) as string[]);
+    setMessage(
+      (data.fileCount as number) > 0
+        ? `Queued ${data.fileCount} file(s) for processing`
+        : "Nothing to upload — every file is already in the knowledge base"
+    );
+
+    // Deliberately no refreshKnowledgeBase() here: recordUpload is the last
+    // of seven steps, so the rows cannot exist yet. The poll below refreshes
+    // once the runs actually finish.
+    const started = (data.runs ?? []) as TrackedRun[];
+    setTrackedRuns((previous) => {
+      const known = new Set(previous.map((run) => run.runId));
+      const next = [...previous, ...started.filter((run) => !known.has(run.runId))];
+      try {
+        sessionStorage.setItem(TRACKED_RUNS_KEY, JSON.stringify(next));
+      } catch {
+        // Progress still works in this tab; only reload recovery is lost.
+      }
+      return next;
+    });
   }
 
   return (
