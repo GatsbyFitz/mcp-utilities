@@ -13,5 +13,6 @@ Applies to route handlers under [app/api/](../../app/api/). Note this project ha
 - Never leak a raw driver or provider error message to the client — log the real error server-side, return a generic message.
 - Convert `snake_case` Postgres columns to `camelCase` at the route boundary, coalescing nullable columns with `?? null`. Callers should never see `size_bytes`.
 - Use the `sql` tagged template from [lib/db.ts](../../lib/db.ts) with interpolated values as parameters. Do not build query strings by concatenation.
+- Never accept file bytes in a route handler — no `formData()` of an uploaded file, no raw body stream. Vercel caps a function request body at 4.5 MB and rejects larger payloads at the edge, before your code runs. Clients upload straight to Blob and POST a JSON manifest instead; see [file-uploads.md](../conventions/file-uploads.md).
 - `middleware.ts` already applies permissive CORS to every route and handles `OPTIONS`. Do not add per-route CORS headers.
 - New route directories are automatically covered by the middleware matcher, which excludes only `/.well-known/workflow/`. Do not add paths to that exclusion.

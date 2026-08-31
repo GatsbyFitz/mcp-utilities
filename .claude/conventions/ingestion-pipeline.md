@@ -2,7 +2,9 @@
 
 `POST /api/upload` starts one `ingestPdf` workflow per file via `start()` from `workflow/api`. The workflow ([app/api/upload/workflow.ts](../../app/api/upload/workflow.ts)) is marked `"use workflow"`; every function in [app/api/upload/steps/](../../app/api/upload/steps/) is marked `"use step"`. `withWorkflow()` wraps the Next config, which compiles those directives into the generated routes under `app/.well-known/workflow/v1/` — those files (and `manifest.json`) are build artifacts, entirely gitignored. Never hand-edit them.
 
-Step order: `uploadPdf` (Vercel Blob) → `createMarkdown` (Gemini PDF→Markdown) → `createEmbeddings` (Upstash Vector) → `extractGraph` (Neo4j) → `recordUpload` (Neon Postgres `uploads` table).
+Step order: `createMarkdown` (Gemini PDF→Markdown) → `createEmbeddings` (Upstash Vector) → `extractGraph` (Neo4j) → `recordUpload` (Neon Postgres `uploads` table).
+
+There is no upload step — the browser puts the PDF in Blob before the workflow starts, so `ingestPdf` receives a `BlobInfo` rather than the bytes. See [file-uploads.md](file-uploads.md).
 
 Retry semantics come from the error type: throw `FatalError` from `workflow` to abort the workflow, a plain `Error` to make the step retryable. `pdfReader.ts` uses both deliberately.
 

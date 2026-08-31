@@ -1,5 +1,5 @@
 import { IngestInput, recordUpload } from "./steps/recordUpload";
-import { uploadPdf, uploadMarkdown } from "./steps/uploadFile";
+import { uploadMarkdown } from "./steps/uploadFile";
 import { createMarkdown, fetchMarkdown } from "./steps/pdfReader";
 import { contextualizeChunks } from "./steps/contextualizeChunks";
 import { createEmbeddings } from "./steps/createEmbeddings";
@@ -9,7 +9,8 @@ import { markResumePoint, type ResumePoint } from "./steps/resumePoint";
 export async function ingestPdf(input: IngestInput) {
   "use workflow";
 
-  const blob = await uploadPdf(input.fileName, input.data);
+  // No upload step: the browser put the PDF in Blob before this run started.
+  const blob = input.blob;
   const markdown = await createMarkdown(blob.url);
 
   // Persisted so a future re-embed can skip the Gemini PDF→Markdown step

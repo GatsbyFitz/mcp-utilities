@@ -13,6 +13,7 @@ This file covers what the system *is*; conventions cover what to *do*. Two mecha
 
 @.claude/conventions/commands.md
 @.claude/conventions/data-stores.md
+@.claude/conventions/file-uploads.md
 @.claude/conventions/ingestion-pipeline.md
 @.claude/conventions/mcp-server.md
 

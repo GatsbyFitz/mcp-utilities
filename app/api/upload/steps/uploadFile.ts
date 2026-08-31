@@ -1,23 +1,17 @@
 import { v4 as uuidv4 } from "uuid";
 import { put } from "@vercel/blob";
-import { BlobInfo } from "./recordUpload";
+
 // ---------------------------------------------------------------------------
-// Step 1: Upload PDF to Vercel Blob
+// Blob writes made by the pipeline itself.
+//
+// There is no uploadPdf step: the browser uploads the PDF straight to Blob
+// before the workflow starts (see .claude/conventions/file-uploads.md), so by
+// the time ingestPdf runs the document is already stored.
 // ---------------------------------------------------------------------------
 
-export async function uploadPdf(fileName: string, data: Uint8Array): Promise<BlobInfo> {
-  "use step";
-
-  const blob = await put(`uploads/${uuidv4()}-${fileName}`, Buffer.from(data), {
-    access: "public",
-    addRandomSuffix: false,
-  });
-
-  return { url: blob.url, downloadUrl: blob.downloadUrl, pathname: blob.pathname };
-}
-
-// Persists the converted Markdown so re-embedding can skip the PDF→Markdown
-// step entirely instead of re-running Gemini parsing on every re-embed.
+// Persists the converted Markdown so re-embedding — and retrying a failed
+// ingestion — can skip the Gemini PDF→Markdown step entirely instead of
+// re-running it on every attempt.
 export async function uploadMarkdown(fileName: string, markdown: string): Promise<string> {
   "use step";
 
