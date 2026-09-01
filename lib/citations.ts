@@ -53,12 +53,57 @@ function toCitation(md: ChunkMetadata): Citation {
   };
 }
 
-/** "[1] Title (v2.0, pp. 10-11) — score 0.74" */
+/**
+ * "Title v4.0.1" — how a document is named wherever it is referred to as a
+ * whole, as opposed to one chunk of it.
+ *
+ * `version` is stored already prefixed ("v401", from lib/documentMeta.ts), so
+ * it is used verbatim rather than re-prefixed.
+ */
+function citationLabel(c: Citation): string {
+  return c.version ? `${c.title} ${c.version}` : c.title;
+}
+
+/** "[1] Title v4.0.1 (pp. 10-11) — relevance 0.74" */
 function citationLine(n: number, c: Citation, score: number): string {
-  const parts = [c.version ? `v${c.version}` : null, c.pages].filter(Boolean);
-  const detail = parts.length ? ` (${parts.join(", ")})` : "";
-  return `[${n}] ${c.title}${detail} \u2014 relevance ${score.toFixed(2)}`;
+  const detail = c.pages ? ` (${c.pages})` : "";
+  return `[${n}] ${citationLabel(c)}${detail} \u2014 relevance ${score.toFixed(2)}`;
+}
+
+/** Markdown link text is delimited by brackets, so a title containing one would break it. */
+function escapeLinkLabel(label: string): string {
+  return label.replace(/([[\]])/g, "\\$1");
+}
+
+/**
+ * A bare URL only survives as a link if it has no whitespace or parentheses;
+ * the angle-bracket form is the CommonMark escape hatch for the rest. Blob
+ * pathnames embed the original file name, so parentheses do occur.
+ */
+function linkDestination(url: string): string {
+  return /[\s()<>]/.test(url) ? `<${url.replace(/([<>])/g, "\\$1")}>` : url;
+}
+
+/**
+ * Deduplicated source list, one line per document, as Markdown links.
+ *
+ * Emitted as links rather than "Title: https://…" so the block is already
+ * clickable when a model quotes the tool output verbatim — which is the common
+ * case. Relying on the model to pair a title with a bare URL and rebuild the
+ * link itself gets it wrong often enough to matter. Every tool that cites
+ * documents should render its sources through this, so the format stays
+ * identical across them.
+ */
+function sourceList(citations: Citation[]): string {
+  const unique = [...new Map(citations.map((c) => [c.source, c])).values()];
+
+  return unique
+    .map((c) => {
+      const label = escapeLinkLabel(citationLabel(c));
+      return c.url ? `- [${label}](${linkDestination(c.url)})` : `- ${label} (no URL in index)`;
+    })
+    .join("\n");
 }
 
 export type { ChunkMetadata, Citation };
-export { toCitation, citationLine };
+export { toCitation, citationLine, citationLabel, sourceList };
