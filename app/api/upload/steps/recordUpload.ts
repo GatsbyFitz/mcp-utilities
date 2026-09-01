@@ -4,10 +4,12 @@ import { v4 as uuidv4 } from "uuid";
 // ---------------------------------------------------------------------------
 // Step 4: Record the upload in Postgres
 // ---------------------------------------------------------------------------
+// The PDF is uploaded to Blob by the browser before ingestion starts, so the
+// workflow receives a reference to it rather than the bytes themselves.
 export interface IngestInput {
   fileName: string;
   sizeBytes: number;
-  data: Uint8Array;
+  blob: BlobInfo;
 }
 
 export interface BlobInfo {

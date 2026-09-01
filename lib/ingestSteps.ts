@@ -5,8 +5,9 @@
 // `app/api/upload/workflow.ts`. A step added there but not here is simply
 // never reported — progress silently under-counts rather than erroring.
 
+// The PDF is already in Blob before ingestion starts, so there is no upload
+// step here — see .claude/conventions/file-uploads.md.
 export const INGEST_STEPS = [
-  { name: "uploadPdf", label: "Storing PDF" },
   { name: "createMarkdown", label: "Converting to Markdown" },
   { name: "uploadMarkdown", label: "Saving Markdown" },
   { name: "contextualizeChunks", label: "Contextualising chunks" },

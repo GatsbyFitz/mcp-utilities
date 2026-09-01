@@ -17,8 +17,8 @@ export interface ResumePoint {
  *
  * It writes nothing outside the journal — the point is purely that a retry can
  * read *this* step instead of a step whose serialized input carries the whole
- * PDF or the whole markdown (`resolveData` resolves a step's input and output
- * together, so reading `uploadPdf` would pull the PDF bytes back out).
+ * markdown (`resolveData` resolves a step's input and output together, so
+ * reading `createEmbeddings` would pull the entire document back out).
  *
  * Its presence in a failed run's journal is also exactly what makes that run
  * resumable: past this point the expensive Gemini PDF→Markdown parse never has

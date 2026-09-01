@@ -7,21 +7,21 @@ A Next.js 15 app that ingests PDFs into a vector index and a knowledge graph, th
 The app is one Next.js 15 deployment split into two halves that never call each other directly — they only agree on shared storage and a shared chunking function:
 
 ```
-PDF upload                                    MCP client (e.g. Claude Code)
-    │                                                      │
-    ▼                                                      ▼
-POST /api/upload                                      GET/POST /mcp
-    │  (durable workflow, one per file)                    │  (mcp-handler)
-    │                                              ┌────────┴────────┐
-    ▼                                              ▼                 ▼
-1. uploadPdf        → Vercel Blob             search_docs        search_graph
-2. createMarkdown    (Gemini PDF→MD)          (vector + sparse    (graph walk +
-3. createEmbeddings → Upstash Vector           hybrid + rerank)    vector-seeded)
-4. extractGraph     → Neo4j Aura                    │                 │
-5. recordUpload     → Neon Postgres                 ▼                 ▼
-                                                Upstash Vector      Neo4j Aura
-                                                                  + Upstash Vector
-                                                                    (excerpt fetch)
+Browser ──upload()──> Vercel Blob             MCP client (e.g. Claude Code)
+    │   (direct; bypasses the 4.5 MB               │
+    │    function body limit)                      ▼
+    ▼                                         GET/POST /mcp
+POST /api/upload  (JSON manifest)                  │  (mcp-handler)
+    │  (durable workflow, one per file)     ┌───────┴────────┐
+    ▼                                       ▼                ▼
+1. createMarkdown    (Gemini PDF→MD)   search_docs       search_graph
+2. createEmbeddings → Upstash Vector   (vector + sparse   (graph walk +
+3. extractGraph     → Neo4j Aura        hybrid + rerank)   vector-seeded)
+4. recordUpload     → Neon Postgres         │                │
+                                            ▼                ▼
+                                       Upstash Vector     Neo4j Aura
+                                                        + Upstash Vector
+                                                          (excerpt fetch)
 ```
 
 - **Ingestion** (`app/api/upload/workflow.ts`, marked `"use workflow"`) is durable — each step is a separately retryable unit, compiled by `withWorkflow()` into generated routes under `app/.well-known/workflow/v1/` (gitignored build artifacts, never hand-edited).
@@ -30,7 +30,7 @@ POST /api/upload                                      GET/POST /mcp
 
 | Store | Written by | Read by | Purpose |
 | --- | --- | --- | --- |
-| Vercel Blob | `uploadPdf` | `kb://documents` resource (URL only) | original PDF bytes |
+| Vercel Blob | the browser, direct | `kb://documents` resource (URL only) | original PDF bytes |
 | Upstash Vector | `createEmbeddings` | `search_docs`, `search_graph` | chunk text + citation metadata, semantic/hybrid search |
 | Neo4j Aura | `extractGraph` | `search_graph` | entities + relationships extracted from chunks |
 | Neon Postgres | `recordUpload` | `kb://documents` resource | one row per ingested document (name, chunk count, size, blob URL) |
@@ -41,13 +41,26 @@ See [.claude/conventions/](.claude/conventions/) for the full architecture write
 
 `POST /api/upload` starts one workflow per file, with these steps in order:
 
-1. **uploadPdf** — stores the file in Vercel Blob
-2. **createMarkdown** — converts the PDF to Markdown via Gemini
-3. **createEmbeddings** — chunks the markdown (`lib/chunking.ts`) and embeds each chunk into Upstash Vector (`google/gemini-embedding-2`, 1536 dimensions)
-4. **extractGraph** — re-derives the same chunks and extracts entities/relationships into Neo4j
-5. **recordUpload** — writes a row to the Neon `uploads` table
+1. **createMarkdown** — converts the PDF to Markdown via Gemini
+2. **createEmbeddings** — chunks the markdown (`lib/chunking.ts`) and embeds each chunk into Upstash Vector (`google/gemini-embedding-2`, 1536 dimensions)
+3. **extractGraph** — re-derives the same chunks and extracts entities/relationships into Neo4j
+4. **recordUpload** — writes a row to the Neon `uploads` table
+
+There is no upload step: the browser puts the PDF in Blob before the workflow starts (see below), so ingestion begins from a blob URL.
 
 `createEmbeddings` and `extractGraph` chunk independently but must agree on chunk boundaries and IDs (`lib/chunking.ts` is the single source of truth) — `search_graph` uses a chunk's `chunkId` to fetch its text straight out of the vector index.
+
+### Uploads go straight to Blob
+
+A Vercel function caps its request body at 4.5 MB and rejects anything larger at the platform edge with `413 FUNCTION_PAYLOAD_TOO_LARGE`, before the handler runs. The limit is not configurable, and regulatory PDFs exceed it routinely. So file bytes never pass through a route handler:
+
+1. The browser calls `upload()` from `@vercel/blob/client` with `multipart: true`, uploading directly to Blob (up to 5 TB, parts in parallel, failed parts retried) and reporting progress via `onUploadProgress`.
+2. `POST /api/upload/token` issues the client token via `handleUpload()`. It is auth-gated, and it is where an upload is refused — the duplicate-name check, `allowedContentTypes` and `maximumSizeInBytes` all live in `onBeforeGenerateToken`, so a rejected file never transfers a byte. Those constraints are baked into the issued token and enforced by Blob, not by the browser.
+3. `POST /api/upload` then receives a small JSON manifest of finished uploads and starts one workflow per file, re-checking duplicates authoritatively since a client can skip the token route.
+
+`onUploadCompleted` is deliberately unused: it is a Blob-to-server callback that cannot reach `localhost`, so relying on it would make local development require a tunnel.
+
+This is the standard for every client upload in this repo, not a special case for PDFs — see [.claude/conventions/file-uploads.md](.claude/conventions/file-uploads.md). Server-side `put()` for content the app generates itself (`uploadMarkdown`) is unaffected.
 
 ### Duplicate uploads
 

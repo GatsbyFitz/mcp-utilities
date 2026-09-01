@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw } from "lucide-react";
 import { signOut } from "next-auth/react";
+import { upload } from "@vercel/blob/client";
+import { normalizeName, uploadPathname, type UploadedFile } from "@/lib/upload";
 import { INGEST_STEPS, isTerminalRunStatus, type IngestRunProgress } from "@/lib/ingestSteps";
 import { Button } from "@/components/ui/button";
 import {
@@ -77,7 +79,8 @@ export default function UploadPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [trackedRuns, setTrackedRuns] = useState<TrackedRun[]>([]);
   const [runProgress, setRunProgress] = useState<Record<string, IngestRunProgress>>({});
-  const [skippedFiles, setSkippedFiles] = useState<string[]>([]);
+  const [notices, setNotices] = useState<string[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<{ fileName: string; percentage: number }[]>([]);
   const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
 
   const refreshKnowledgeBase = useCallback(async () => {
@@ -292,48 +295,128 @@ export default function UploadPage() {
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const files = (e.currentTarget.elements.namedItem("file") as HTMLInputElement).files;
-    if (!files || files.length === 0) return;
+    const selected = (e.currentTarget.elements.namedItem("file") as HTMLInputElement).files;
+    if (!selected || selected.length === 0) return;
 
     setStatus("loading");
     setMessage("");
-    setSkippedFiles([]);
+    setNotices([]);
 
-    const formData = new FormData();
-    for (const file of Array.from(files)) {
-      formData.append("files", file);
+    // Drop a name repeated within this selection before paying to upload it
+    // twice. The server checks against the knowledge base independently.
+    const seen = new Set<string>();
+    const files = Array.from(selected).filter((file) => {
+      const key = normalizeName(file.name);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    setUploadProgress(files.map((file) => ({ fileName: file.name, percentage: 0 })));
+
+    // Straight to Blob storage, never through a route handler — a Vercel
+    // function caps its request body at 4.5 MB. Sequential rather than
+    // parallel so one large PDF isn't competing with the next for bandwidth.
+    const uploaded: UploadedFile[] = [];
+    const notices: string[] = [];
+
+    for (const file of files) {
+      try {
+        const blob = await upload(uploadPathname(file.name), file, {
+          access: "public",
+          handleUploadUrl: "/api/upload/token",
+          multipart: true,
+          clientPayload: JSON.stringify({ fileName: file.name }),
+          onUploadProgress: ({ percentage }) =>
+            setUploadProgress((previous) =>
+              previous.map((entry) =>
+                entry.fileName === file.name ? { ...entry, percentage } : entry
+              )
+            ),
+        });
+
+        uploaded.push({
+          fileName: file.name,
+          sizeBytes: file.size,
+          url: blob.url,
+          downloadUrl: blob.downloadUrl,
+          pathname: blob.pathname,
+        });
+      } catch (error) {
+        // A refused token (duplicate name, wrong type, too large) lands here
+        // before any bytes were sent.
+        notices.push(
+          error instanceof Error ? error.message : `${file.name}: upload failed`
+        );
+      }
     }
 
-    const res = await fetch("/api/upload", { method: "POST", body: formData });
-    const data = await res.json();
+    setUploadProgress([]);
 
-    if (res.ok) {
-      setStatus("success");
-      setSkippedFiles((data.skipped ?? []) as string[]);
-      setMessage(
-        data.fileCount > 0
-          ? `Queued ${data.fileCount} file(s) for processing`
-          : "Nothing to upload — every file is already in the knowledge base"
-      );
-
-      // Deliberately no refreshKnowledgeBase() here: recordUpload is the last
-      // of seven steps, so the rows cannot exist yet. The poll below refreshes
-      // once the runs actually finish.
-      const started = (data.runs ?? []) as TrackedRun[];
-      setTrackedRuns((previous) => {
-        const known = new Set(previous.map((run) => run.runId));
-        const next = [...previous, ...started.filter((run) => !known.has(run.runId))];
-        try {
-          sessionStorage.setItem(TRACKED_RUNS_KEY, JSON.stringify(next));
-        } catch {
-          // Progress still works in this tab; only reload recovery is lost.
-        }
-        return next;
-      });
-    } else {
+    if (uploaded.length === 0) {
       setStatus("error");
-      setMessage(data.error ?? "Upload failed");
+      setNotices(notices);
+      setMessage("Nothing was uploaded");
+      return;
     }
+
+    let res: Response;
+    let data: Record<string, unknown> = {};
+    try {
+      res = await fetch("/api/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: uploaded }),
+      });
+      // Not every failure comes back as JSON, so parse defensively rather
+      // than letting res.json() throw before res.ok is checked.
+      const body = await res.text();
+      try {
+        data = body ? JSON.parse(body) : {};
+      } catch {
+        data = {};
+      }
+    } catch (error) {
+      setStatus("error");
+      setNotices(notices);
+      setMessage(error instanceof Error ? error.message : "Could not start ingestion");
+      return;
+    }
+
+    if (!res.ok) {
+      setStatus("error");
+      setNotices(notices);
+      setMessage((data.error as string) ?? `Could not start ingestion (${res.status})`);
+      return;
+    }
+
+    const skipped = (data.skipped ?? []) as string[];
+    if (skipped.length > 0) {
+      notices.push(`Already in the knowledge base, skipped: ${skipped.join(", ")}`);
+    }
+
+    setStatus("success");
+    setNotices(notices);
+    setMessage(
+      (data.fileCount as number) > 0
+        ? `Queued ${data.fileCount} file(s) for processing`
+        : "Nothing to ingest — every file is already in the knowledge base"
+    );
+
+    // Deliberately no refreshKnowledgeBase() here: recordUpload is the last
+    // step, so the rows cannot exist yet. The poll refreshes once the runs
+    // actually finish.
+    const started = (data.runs ?? []) as TrackedRun[];
+    setTrackedRuns((previous) => {
+      const known = new Set(previous.map((run) => run.runId));
+      const next = [...previous, ...started.filter((run) => !known.has(run.runId))];
+      try {
+        sessionStorage.setItem(TRACKED_RUNS_KEY, JSON.stringify(next));
+      } catch {
+        // Progress still works in this tab; only reload recovery is lost.
+      }
+      return next;
+    });
   }
 
   return (
@@ -390,12 +473,30 @@ export default function UploadPage() {
                     {message}
                   </p>
                 )}
-                {skippedFiles.length > 0 && (
-                  <p className="text-sm text-amber-400">
-                    Skipped {skippedFiles.length} already in the knowledge base:{" "}
-                    {skippedFiles.join(", ")}
+                {notices.map((notice) => (
+                  <p key={notice} className="text-sm text-amber-400">
+                    {notice}
                   </p>
-                )}
+                ))}
+
+                {/* Transfer to Blob storage, before any workflow exists to
+                    report on. Ingestion progress picks up from here. */}
+                {uploadProgress.map((entry) => (
+                  <div key={entry.fileName} className="space-y-1">
+                    <div className="flex items-baseline justify-between gap-2 text-xs text-muted-foreground">
+                      <span className="min-w-0 truncate" title={entry.fileName}>
+                        {entry.fileName}
+                      </span>
+                      <span className="shrink-0 tabular-nums">{Math.round(entry.percentage)}%</span>
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/15">
+                      <div
+                        className="h-full rounded-full bg-white transition-[width] duration-200"
+                        style={{ width: `${entry.percentage}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
               </form>
             </CardContent>
           </Card>
