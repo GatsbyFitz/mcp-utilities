@@ -12,6 +12,56 @@ import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import type { Root } from "mdast";
 
+/**
+ * Page-break marker emitted by `createMarkdown`, sitting immediately before
+ * the content of the page it names (1-indexed). Content before the first
+ * marker is page 1.
+ *
+ * Markers are stripped before parsing, never chunked: they would otherwise be
+ * embedded, fed to the model as context, and shown inside citation excerpts —
+ * and a marker landing mid-table would break the table for the AST parser.
+ */
+const PAGE_MARKER = /^[ \t]*-{4,}\s*Page \((\d+)\) Break\s*-{4,}[ \t]*$/gm;
+
+interface PageBreak {
+  /** Offset into the *stripped* text at which this page's content begins. */
+  offset: number;
+  page: number;
+}
+
+/**
+ * Removes page markers and records where each page starts in the stripped
+ * text. A document with no markers comes back unchanged with no breaks, so
+ * chunk boundaries for documents ingested before markers existed are
+ * bit-for-bit what they always were.
+ */
+export function stripPageMarkers(text: string): { text: string; breaks: PageBreak[] } {
+  const breaks: PageBreak[] = [];
+  let stripped = "";
+  let lastIndex = 0;
+
+  PAGE_MARKER.lastIndex = 0;
+  for (const match of text.matchAll(PAGE_MARKER)) {
+    const start = match.index!;
+    stripped += text.slice(lastIndex, start);
+    breaks.push({ offset: stripped.length, page: parseInt(match[1], 10) });
+    lastIndex = start + match[0].length;
+  }
+  stripped += text.slice(lastIndex);
+
+  return { text: stripped, breaks };
+}
+
+/** The 1-indexed page in effect at an offset into the stripped text. */
+function pageAt(breaks: PageBreak[], offset: number): number {
+  let page = 1;
+  for (const brk of breaks) {
+    if (brk.offset > offset) break;
+    page = brk.page;
+  }
+  return page;
+}
+
 /** Canonical vector-index ID for a chunk. */
 export function chunkId(fileName: string, index: number): string {
   return `${fileName}-${index}`;
@@ -46,20 +96,46 @@ function splitBySize(text: string, size: number): string[] {
  * — including an oversized block — rather than being flushed alone; a
  * heading isolated from its own content is worse than one oversized chunk.
  */
-export function chunkText(text: string, size = 500): string[] {
+export interface Chunk {
+  text: string;
+  /** 1-indexed printed page the chunk starts on; null when the document has no page markers. */
+  pageStart: number | null;
+  /** 1-indexed printed page the chunk ends on; null when the document has no page markers. */
+  pageEnd: number | null;
+}
+
+/**
+ * Same boundaries as `chunkText`, plus the page span each chunk covers.
+ * `chunkText` delegates here, so every caller chunks identically whether or
+ * not it cares about pages — the invariant above depends on that.
+ */
+export function chunkTextWithPages(raw: string, size = 500): Chunk[] {
+  const { text, breaks } = stripPageMarkers(raw);
   const tree = markdownParser.parse(text) as Root;
 
-  const chunks: string[] = [];
+  const chunks: Chunk[] = [];
   let current: string[] = [];
   let currentWords = 0;
   let currentHasBody = false;
+  let currentStart: number | null = null;
+  let currentEnd: number | null = null;
+
+  function push(body: string, start: number | null, end: number | null) {
+    chunks.push({
+      text: body,
+      pageStart: breaks.length > 0 && start !== null ? pageAt(breaks, start) : null,
+      pageEnd: breaks.length > 0 && end !== null ? pageAt(breaks, Math.max(start ?? 0, end - 1)) : null,
+    });
+  }
 
   function flush() {
     if (current.length > 0) {
-      chunks.push(current.join("\n\n").trim());
+      push(current.join("\n\n").trim(), currentStart, currentEnd);
       current = [];
       currentWords = 0;
       currentHasBody = false;
+      currentStart = null;
+      currentEnd = null;
     }
   }
 
@@ -82,13 +158,17 @@ export function chunkText(text: string, size = 500): string[] {
       // No smaller structural boundary to split on than the word count. A
       // pending heading rides along with the first piece rather than being
       // flushed alone.
+      // One block split by word count has no finer offsets to attribute, so
+      // every part reports the whole block's page span.
       const parts = splitBySize(blockText, size);
       current.push(parts[0]);
-      chunks.push(current.join("\n\n").trim());
-      chunks.push(...parts.slice(1));
+      push(current.join("\n\n").trim(), currentStart ?? start, end);
+      for (const part of parts.slice(1)) push(part, start, end);
       current = [];
       currentWords = 0;
       currentHasBody = false;
+      currentStart = null;
+      currentEnd = null;
       continue;
     }
 
@@ -99,6 +179,11 @@ export function chunkText(text: string, size = 500): string[] {
       flush();
     }
 
+    // Claimed only now: any flush above has already closed the previous chunk
+    // with its own range.
+    if (currentStart === null) currentStart = start;
+    currentEnd = end;
+
     current.push(blockText);
     currentWords += words;
     if (!isHeading) currentHasBody = true;
@@ -106,6 +191,11 @@ export function chunkText(text: string, size = 500): string[] {
 
   flush();
   return chunks;
+}
+
+/** Chunk bodies only — the shape the contextualisation and graph steps use. */
+export function chunkText(text: string, size = 500): string[] {
+  return chunkTextWithPages(text, size).map((chunk) => chunk.text);
 }
 
 export function titleFromFilename(filename: string): string {

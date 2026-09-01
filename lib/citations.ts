@@ -6,7 +6,10 @@ interface ChunkMetadata {
   citationId?: string;
   blobUrl?: string;
   blobDownloadUrl?: string;
-  // Present if you enrich at ingestion (recommended):
+  // Written by createEmbeddings; null on documents ingested before the
+  // relevant derivation existed, and backfillable — see /api/backfillCitations.
+  pageStart?: number | null;
+  pageEnd?: number | null;
   title?: string;
   version?: string;
   publisher?: string;
@@ -31,17 +34,11 @@ function titleFromFilename(filename: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Extract page range from "----------------Page (N) Break----------------" markers in chunk text. */
-function pageRange(text: string): string | null {
-  const pages = [...text.matchAll(/Page \((\d+)\) Break/g)].map((m) =>
-    parseInt(m[1], 10)
-  );
-  if (pages.length === 0) return null;
-  const min = Math.min(...pages);
-  const max = Math.max(...pages);
-  // Page markers are 0-indexed breaks; content spans from before the first
-  // marker to after the last, so report as printed pages (1-indexed).
-  return min === max ? `p. ${min + 1}` : `pp. ${min + 1}\u2013${max + 2}`;
+/** "p. 4" / "pp. 4\u20136" from the page span stored at ingestion. */
+function pageRange(start?: number | null, end?: number | null): string | null {
+  if (!start) return null;
+  if (!end || end <= start) return `p. ${start}`;
+  return `pp. ${start}\u2013${end}`;
 }
 
 function toCitation(md: ChunkMetadata): Citation {
@@ -49,7 +46,7 @@ function toCitation(md: ChunkMetadata): Citation {
     title: md.title ?? titleFromFilename(md.source ?? "unknown"),
     version: md.version ?? null,
     publisher: md.publisher ?? null,
-    pages: md.text ? pageRange(md.text) : null,
+    pages: pageRange(md.pageStart, md.pageEnd),
     url: md.blobUrl ?? null,
     source: md.source ?? "unknown",
     chunkIndex: md.chunkIndex ?? null,

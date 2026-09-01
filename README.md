@@ -101,7 +101,7 @@ Everything below is registered in `app/mcp/tools/index.ts`, `app/mcp/prompts/ind
 **`echo`** — Trivial diagnostic tool that echoes back a message. Useful for confirming the MCP connection is alive.
 
 Both search tools:
-- render numbered citation headers (document title, version, page range) via `lib/citations.ts`, plus a deduplicated source list with blob URLs
+- render numbered citation headers (document title, version, page range) via `lib/citations.ts`, plus a deduplicated source list with blob URLs. Version and page span are written into vector metadata at ingestion (`lib/documentMeta.ts`, `chunkTextWithPages`); a document ingested before that existed shows title only until `POST /api/backfillCitations` runs, and pages need a re-ingest since older Markdown has no page markers
 - catch errors into `{ isError: true }` rather than throwing
 - share embedding conventions: queries embed with `taskType: "RETRIEVAL_QUERY"` and prefix `task: search result | query: …`, matching how documents were embedded (`RETRIEVAL_DOCUMENT`, `title: … | text: …`)
 
