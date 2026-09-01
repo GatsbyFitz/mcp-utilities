@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getToken } from "next-auth/jwt";
 import { del } from "@vercel/blob";
 import { sql } from "@/lib/db";
 import { vectorIndex } from "@/lib/vector";
@@ -13,6 +14,14 @@ function escapeFilterValue(value: string): string {
 }
 
 export async function DELETE(req: NextRequest) {
+  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+  if (!token) {
+    return NextResponse.json(
+      { success: false, error: "Unauthorized" },
+      { status: 401 }
+    );
+  }
+
   const { id } = (await req.json().catch(() => ({}))) as { id?: string };
   if (!id) {
     return NextResponse.json({ success: false, error: "Missing id" }, { status: 400 });

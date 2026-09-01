@@ -2,38 +2,62 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 
-// Only the upload page itself is gated — API routes are untouched, matching
-// every other route's existing CORS-only behavior.
-const PROTECTED_PATHS = ["/"];
+// Page routes gated by redirecting to the login screen.
+const PROTECTED_PAGES = ["/"];
+
+/**
+ * The only API paths reachable without a session. NextAuth's own endpoints
+ * have to be, or there is no way to log in and obtain one.
+ *
+ * `/mcp` is not under `/api` and so is not covered here — it stays open
+ * deliberately, since external MCP clients connect to it.
+ */
+const PUBLIC_API_PREFIXES = ["/api/auth/"];
+
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+  "Access-Control-Allow-Headers": "*",
+};
 
 export async function middleware(request: NextRequest) {
   if (request.method === "OPTIONS") {
     const response = new NextResponse(null, { status: 204 });
-    response.headers.set("Access-Control-Allow-Origin", "*");
-    response.headers.set(
-      "Access-Control-Allow-Methods",
-      "GET,POST,PUT,DELETE,OPTIONS",
-    );
-    response.headers.set("Access-Control-Allow-Headers", "*");
+    for (const [key, value] of Object.entries(CORS_HEADERS)) {
+      response.headers.set(key, value);
+    }
     return response;
   }
 
-  if (PROTECTED_PATHS.includes(request.nextUrl.pathname)) {
+  const { pathname } = request.nextUrl;
+
+  // Deny by default across the API surface. Every route also checks its own
+  // session, but this is what makes a *newly added* route protected because
+  // it exists rather than because someone remembered to gate it — which is
+  // how deleteDocument, reembed and returnKnowledgeBase came to be open.
+  if (
+    pathname.startsWith("/api/") &&
+    !PUBLIC_API_PREFIXES.some((prefix) => pathname.startsWith(prefix))
+  ) {
+    const token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET });
+    if (!token) {
+      return NextResponse.json(
+        { success: false, error: "Unauthorized" },
+        { status: 401, headers: CORS_HEADERS }
+      );
+    }
+  }
+
+  if (PROTECTED_PAGES.includes(pathname)) {
     const token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET });
     if (!token) {
       const loginUrl = new URL("/login", request.url);
-      loginUrl.searchParams.set("callbackUrl", request.nextUrl.pathname);
+      loginUrl.searchParams.set("callbackUrl", pathname);
       return NextResponse.redirect(loginUrl);
     }
   }
 
-  return NextResponse.next({
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-      "Access-Control-Allow-Headers": "*",
-    },
-  });
+  return NextResponse.next({ headers: CORS_HEADERS });
 }
 
 export const config = {
