@@ -11,7 +11,8 @@ import {
   type UploadedFile,
 } from "@/lib/upload";
 import { INGEST_STEPS, isTerminalRunStatus, type IngestRunProgress } from "@/lib/ingestSteps";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   Card,
   CardAction,
@@ -629,25 +630,29 @@ export default function UploadPage() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
+                          {/* Plain anchors, not <Button render={<a/>}>. These
+                              are links, and Base UI's non-native mode stamps
+                              role="button" on them and routes the click
+                              through its own handlers — semantics a link
+                              should not have, and a layer between the user
+                              and a navigation that has already broken once. */}
                           {item.blobUrl && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              nativeButton={false}
-                              render={<a href={item.blobUrl} target="_blank" rel="noopener noreferrer" />}
+                            <a
+                              href={item.blobUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
                             >
                               View
-                            </Button>
+                            </a>
                           )}
                           {item.blobDownloadUrl && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              nativeButton={false}
-                              render={<a href={item.blobDownloadUrl} />}
+                            <a
+                              href={item.blobDownloadUrl}
+                              className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
                             >
                               Download
-                            </Button>
+                            </a>
                           )}
                           <Button
                             variant="outline"

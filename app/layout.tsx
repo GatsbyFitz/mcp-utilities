@@ -118,33 +118,40 @@ function iframePatchFn() {
   };
 
   // 3. Intercept external link clicks → window.openai.openExternal()
+  //
+  // Only ever installed inside a host iframe. A sandboxed iframe cannot open a
+  // new tab itself, so it has to hand the URL to the host; an ordinary browser
+  // needs no help and must not have a listener sitting on every link it can
+  // never usefully act on. Two guards, because either one alone has bitten us:
+  // the listener is not registered outside an iframe at all, and inside one it
+  // cancels the navigation only once a host has actually accepted the handoff.
   const appOrigin = new URL(baseUrl).origin;
-  window.addEventListener(
-    "click",
-    (e: MouseEvent) => {
-      const a = (e.target as HTMLElement)?.closest?.("a");
-      if (!a?.href) return;
-      const url = new URL(a.href, window.location.href);
-      if (url.origin === window.location.origin || url.origin === appOrigin) return;
+  if (isInIframe) {
+    window.addEventListener(
+      "click",
+      (e: MouseEvent) => {
+        const a = (e.target as HTMLElement)?.closest?.("a");
+        if (!a?.href) return;
+        const url = new URL(a.href, window.location.href);
+        if (url.origin === window.location.origin || url.origin === appOrigin) return;
 
-      // Only cancel the navigation if a host actually takes it over. Optional
-      // chaining does not throw when `window.openai` is undefined — it yields
-      // undefined — so calling preventDefault() unconditionally killed every
-      // cross-origin link in an ordinary browser, with nothing opening it
-      // instead. Blob URLs are cross-origin, which is what broke the View and
-      // Download actions on the knowledge base.
-      const openExternal = (window as any).openai?.openExternal;
-      if (typeof openExternal !== "function") return;
+        // Optional chaining does not throw when `window.openai` is undefined —
+        // it yields undefined — so calling preventDefault() unconditionally
+        // killed every cross-origin link, with nothing opening it instead.
+        // Blob URLs are cross-origin, which is what broke View and Download.
+        const openExternal = (window as any).openai?.openExternal;
+        if (typeof openExternal !== "function") return;
 
-      try {
-        openExternal({ href: a.href });
-        e.preventDefault();
-      } catch {
-        /* handoff failed — leave the browser to navigate normally */
-      }
-    },
-    true,
-  );
+        try {
+          openExternal({ href: a.href });
+          e.preventDefault();
+        } catch {
+          /* handoff failed — leave the browser to navigate normally */
+        }
+      },
+      true,
+    );
+  }
 
   // 4. Patch fetch so RSC / data payloads go to the real server
   if (isInIframe && window.location.origin !== appOrigin) {
