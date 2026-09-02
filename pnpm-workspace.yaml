@@ -3,4 +3,7 @@ allowBuilds:
   cbor-extract: true
   esbuild: true
   sharp: true
-  unrs-resolver: set this to true or false
+  # Pulled in by eslint-config-next. Its native build is not needed —
+  # `pnpm lint` resolves fine without it — and an unresolved entry here
+  # makes `pnpm install` exit 1 on a cold install, failing the deploy.
+  unrs-resolver: false
