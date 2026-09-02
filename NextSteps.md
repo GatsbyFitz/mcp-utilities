@@ -36,6 +36,7 @@
 - ✓ Reject duplicate uploads by file name
 - ✓ Per-step failure detail, and retry a failed ingestion from its saved Markdown
 - ✓ Client uploads go straight to Blob, lifting the 4.5 MB request-body limit
+- ✓ Whole-knowledge-graph viewer at `/graph` (`GET /api/graph`, canvas force layout in [lib/forceLayout.ts](lib/forceLayout.ts))
 
 ### Trashed
 - ~~Implement Sampling! (Deprecated)~~ — not deprecated. Sampling is in the 2026-07-28 MCP spec, redesigned via Multi Round-Trip Requests (SEP-2322) so it no longer needs an open bidirectional stream. Moved to Med above

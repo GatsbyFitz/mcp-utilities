@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw } from "lucide-react";
+import Link from "next/link";
+import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2 } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { upload } from "@vercel/blob/client";
 import {
@@ -567,6 +568,13 @@ export default function UploadPage() {
             <CardTitle>Knowledge Base</CardTitle>
             <CardDescription>View the current knowledge base records</CardDescription>
             <CardAction className="flex gap-2">
+              <Link
+                href="/graph"
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+              >
+                <Share2 />
+                Knowledge graph
+              </Link>
               <Button
                 variant="outline"
                 size="sm"

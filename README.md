@@ -88,6 +88,14 @@ A failed run is terminal — the runtime will not resume it in place, and re-enq
 
 `resumeIngest`'s tail is deliberately identical to `ingestPdf`'s and `reembedDocument`'s: same steps, same order, so chunk boundaries and IDs stay in sync between Upstash and Neo4j. Keep all three in step.
 
+### Browsing the knowledge graph
+
+`/graph` renders the whole extracted graph — every `(:Entity)-[:RELATES]->(:Entity)` in Neo4j, not the subgraph around one query the way `search_graph` does. `GET /api/graph` reads it with no embedding step and no search term, ordering edges by the combined degree of their endpoints so a graph past the cap is the well-connected core rather than an arbitrary slice (2,000 edges by default, `?limit=` up to 6,000). Nodes are derived from the returned edges, which loses nothing: `extractGraph` never persists an entity with no relationships.
+
+The page draws to a canvas with a force layout in [lib/forceLayout.ts](lib/forceLayout.ts) — written here rather than pulled in, since d3-force or react-force-graph is a dependency and a bundle for about sixty lines of physics. Repulsion is bucketed into a uniform grid and only evaluated between adjoining cells, which keeps it roughly linear. Layout warmup is budgeted in milliseconds rather than ticks: a tick costs ~2 ms at 400 nodes and ~30 ms at 2,500, so a fixed tick count is a brief pause on a small graph and a multi-second frozen tab on a large one. The rest settles under `requestAnimationFrame`, which re-fits the view once when it comes to rest unless the user has already framed it.
+
+Node colour is the entity type (the most common types get the palette, the tail shares one neutral colour), node size is degree in the current view, and labels appear only for hubs until you zoom in. Filtering by source document rebuilds the layout from just those edges rather than dimming, so degrees and clustering reflect what is on screen. Clicking a node lists its relationships with type, description and source document, each neighbour clickable in turn.
+
 ## MCP server features
 
 Everything below is registered in `app/mcp/tools/index.ts`, `app/mcp/prompts/index.ts`, and `app/mcp/resources/index.ts`, then wired together in `app/mcp/route.ts`.
