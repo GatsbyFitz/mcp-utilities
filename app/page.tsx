@@ -84,6 +84,8 @@ export default function UploadPage() {
   const [reembeddingId, setReembeddingId] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [reextractingAll, setReextractingAll] = useState(false);
+  const [reextractingId, setReextractingId] = useState<string | null>(null);
   const [trackedRuns, setTrackedRuns] = useState<TrackedRun[]>([]);
   const [runProgress, setRunProgress] = useState<Record<string, IngestRunProgress>>({});
   const [notices, setNotices] = useState<string[]>([]);
@@ -224,6 +226,61 @@ export default function UploadPage() {
       throw new Error(data.error ?? `Re-embed request failed: ${res.status}`);
     }
     return data as { queued: number; skipped: number };
+  }
+
+  async function postReextract(id?: string) {
+    const res = await fetch("/api/reextractGraph", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(id ? { id } : {}),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error ?? `Graph re-extraction request failed: ${res.status}`);
+    }
+    return data as { queued: number; skipped: number };
+  }
+
+  async function handleReextractAll() {
+    if (
+      !window.confirm(
+        "Rebuild the knowledge graph for every document? This re-runs entity and relationship extraction only — chunks and embeddings are left alone."
+      )
+    ) {
+      return;
+    }
+    setReextractingAll(true);
+    setActionMessage(null);
+    try {
+      const { queued, skipped } = await postReextract();
+      setActionMessage({
+        text: `Queued ${queued} document(s) for graph re-extraction${skipped ? ` (${skipped} skipped, no markdown or blob)` : ""}.`,
+        error: false,
+      });
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Graph re-extraction failed",
+        error: true,
+      });
+    } finally {
+      setReextractingAll(false);
+    }
+  }
+
+  async function handleReextractRow(id: string, name: string) {
+    setReextractingId(id);
+    setActionMessage(null);
+    try {
+      await postReextract(id);
+      setActionMessage({ text: `Queued "${name}" for graph re-extraction.`, error: false });
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Graph re-extraction failed",
+        error: true,
+      });
+    } finally {
+      setReextractingId(null);
+    }
   }
 
   async function handleReembedAll() {
@@ -578,6 +635,16 @@ export default function UploadPage() {
               <Button
                 variant="outline"
                 size="sm"
+                onClick={handleReextractAll}
+                disabled={reextractingAll || !knowledgeBase?.items.length}
+                title="Re-runs entity and relationship extraction only — chunks and embeddings are untouched"
+              >
+                <Share2 className={reextractingAll ? "animate-spin" : ""} />
+                {reextractingAll ? "Queuing..." : "Rebuild graph"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={handleReembedAll}
                 disabled={reembeddingAll || !knowledgeBase?.items.length}
               >
@@ -662,6 +729,21 @@ export default function UploadPage() {
                               Download
                             </a>
                           )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleReextractRow(item.id, item.name)}
+                            disabled={
+                              reextractingId === item.id ||
+                              reextractingAll ||
+                              reembeddingId === item.id ||
+                              deletingId === item.id
+                            }
+                            title="Rebuild this document's graph without re-embedding its chunks"
+                          >
+                            <Share2 className={reextractingId === item.id ? "animate-spin" : ""} />
+                            {reextractingId === item.id ? "Queuing..." : "Rebuild graph"}
+                          </Button>
                           <Button
                             variant="outline"
                             size="sm"

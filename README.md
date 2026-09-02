@@ -88,6 +88,16 @@ A failed run is terminal — the runtime will not resume it in place, and re-enq
 
 `resumeIngest`'s tail is deliberately identical to `ingestPdf`'s and `reembedDocument`'s: same steps, same order, so chunk boundaries and IDs stay in sync between Upstash and Neo4j. Keep all three in step.
 
+### Rebuilding the graph without re-embedding
+
+`POST /api/reembed` rebuilds everything — contextualise, embed, extract, in that order. When it is the *extraction* that changed (a new prompt, a constrained relationship vocabulary, a different model) and the vectors are already correct, that pays for one model call per chunk plus a full re-embed to arrive at the same vectors it started with.
+
+`POST /api/reextractGraph` (`{ id }` for one document, no body for all) runs the `reextractGraph` workflow: fetch the saved Markdown, `extractGraph`, done. The knowledge base page exposes it as **Rebuild graph**, per row and for the whole corpus.
+
+This is safe to run on its own because `extractGraph` takes the markdown, not the contextualised chunks — nothing it produces depends on the embedding pass. It does still rest on the chunking invariant: `extractGraph` re-derives chunks with `chunkText` and stores a `chunkId` on every relationship that `search_graph` feeds straight to `vectorIndex.fetch()`. The same Markdown through the same `chunkText` yields byte-identical IDs, so the edges keep resolving. **After changing [lib/chunking.ts](lib/chunking.ts), re-extraction alone is not enough** — the new IDs will not exist in Upstash and every graph hit returns a missing excerpt. Re-embed then, so both sides are rebuilt under the same rules.
+
+It writes no `chunks` count. That column belongs to whatever last embedded the document, so `recordMarkdownUrl` only ever touches `markdown_url`, and then only to self-heal a legacy row that had none and had to regenerate its Markdown.
+
 ### Browsing the knowledge graph
 
 `/graph` renders the whole extracted graph — every `(:Entity)-[:RELATES]->(:Entity)` in Neo4j, not the subgraph around one query the way `search_graph` does. `GET /api/graph` reads it with no embedding step and no search term, ordering edges by the combined degree of their endpoints so a graph past the cap is the well-connected core rather than an arbitrary slice (2,000 edges by default, `?limit=` up to 6,000). Nodes are derived from the returned edges, which loses nothing: `extractGraph` never persists an entity with no relationships.
