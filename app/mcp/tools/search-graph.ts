@@ -3,7 +3,7 @@ import * as z from "zod/v4";
 import { embed } from "ai";
 import { vectorIndex } from "@/lib/vector";
 import { withSession } from "@/lib/graph";
-import { toCitation, citationLine, type ChunkMetadata } from "@/lib/citations";
+import { toCitation, citationLine, sourceList, type ChunkMetadata } from "@/lib/citations";
 
 interface RelationRow {
   source: string;
@@ -142,16 +142,7 @@ export function registerSearchGraphTool(server: McpServer): void {
           )
           .join("\n\n---\n\n");
 
-        const sources = [
-          ...new Map(excerpts.map((e) => [e.citation.source, e.citation])).values(),
-        ]
-          .map(
-            (c) =>
-              `- ${c.title}${c.version ? ` v${c.version}` : ""}: ${
-                c.url ?? "no URL in index"
-              }`
-          )
-          .join("\n");
+        const sources = sourceList(excerpts.map((e) => e.citation));
 
         return {
           content: [

@@ -6,7 +6,8 @@ import { vectorIndex } from "@/lib/vector";
 
 import { embedMany } from "ai";
 import { BlobInfo } from "./recordUpload";
-import { chunkId, chunkText, extractTitle } from "@/lib/chunking";
+import { chunkId, chunkTextWithPages, extractTitle } from "@/lib/chunking";
+import { documentCitationMeta } from "@/lib/documentMeta";
 import { sparseVector } from "@/lib/sparse";
 
 export async function createEmbeddings(
@@ -18,7 +19,9 @@ export async function createEmbeddings(
   "use step";
 
   const title = extractTitle(markdown, fileName);
-  const chunks = chunkText(markdown);
+  const paged = chunkTextWithPages(markdown);
+  const chunks = paged.map((chunk) => chunk.text);
+  const { version, publisher } = documentCitationMeta(fileName);
 
   // Contextual retrieval: the situating blurb is folded into what gets
   // embedded (dense) and sparsified, but never into metadata.text — that's
@@ -49,6 +52,13 @@ export async function createEmbeddings(
         blobUrl: blob.url,
         blobDownloadUrl: blob.downloadUrl,
         blobPath: blob.pathname,
+        // Citation fields. Pages are null for a document parsed before
+        // createMarkdown emitted page markers; version/publisher are null
+        // when the file name does not carry them (see lib/documentMeta.ts).
+        pageStart: paged[i].pageStart,
+        pageEnd: paged[i].pageEnd,
+        version,
+        publisher,
       },
     }))
   );

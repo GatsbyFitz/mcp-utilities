@@ -596,13 +596,19 @@ export default function UploadPage() {
                             <Button
                               variant="outline"
                               size="sm"
+                              nativeButton={false}
                               render={<a href={item.blobUrl} target="_blank" rel="noopener noreferrer" />}
                             >
                               View
                             </Button>
                           )}
                           {item.blobDownloadUrl && (
-                            <Button variant="outline" size="sm" render={<a href={item.blobDownloadUrl} />}>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              nativeButton={false}
+                              render={<a href={item.blobDownloadUrl} />}
+                            >
                               Download
                             </Button>
                           )}

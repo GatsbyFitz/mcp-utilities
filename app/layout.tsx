@@ -125,13 +125,22 @@ function iframePatchFn() {
       const a = (e.target as HTMLElement)?.closest?.("a");
       if (!a?.href) return;
       const url = new URL(a.href, window.location.href);
-      if (url.origin !== window.location.origin && url.origin !== appOrigin) {
-        try {
-          (window as any).openai?.openExternal?.({ href: a.href });
-          e.preventDefault();
-        } catch {
-          /* noop */
-        }
+      if (url.origin === window.location.origin || url.origin === appOrigin) return;
+
+      // Only cancel the navigation if a host actually takes it over. Optional
+      // chaining does not throw when `window.openai` is undefined — it yields
+      // undefined — so calling preventDefault() unconditionally killed every
+      // cross-origin link in an ordinary browser, with nothing opening it
+      // instead. Blob URLs are cross-origin, which is what broke the View and
+      // Download actions on the knowledge base.
+      const openExternal = (window as any).openai?.openExternal;
+      if (typeof openExternal !== "function") return;
+
+      try {
+        openExternal({ href: a.href });
+        e.preventDefault();
+      } catch {
+        /* handoff failed — leave the browser to navigate normally */
       }
     },
     true,

@@ -4,7 +4,7 @@ import { embed, rerank } from "ai";
 import { WeightingStrategy } from "@upstash/vector";
 import { vectorIndex } from "@/lib/vector";
 import type { ChunkMetadata } from "@/lib/citations";
-import { toCitation, citationLine } from "@/lib/citations";
+import { toCitation, citationLine, sourceList } from "@/lib/citations";
 import { sparseVector } from "@/lib/sparse";
 
 
@@ -95,19 +95,9 @@ export function registerSearchDocsTool(server: McpServer): void {
           )
           .join("\n\n---\n\n");
 
-        // Deduplicated source list with URLs, once per document.
-        const sources = [
-          ...new Map(
-            results.map((r) => [r.citation.source, r.citation])
-          ).values(),
-        ]
-          .map(
-            (c) =>
-              `- ${c.title}${c.version ? ` v${c.version}` : ""}: ${
-                c.url ?? "no URL in index"
-              }`
-          )
-          .join("\n");
+        // Deduplicated source list, rendered as Markdown links by lib/citations
+        // so every tool emits the same clickable format.
+        const sources = sourceList(results.map((r) => r.citation));
 
         return {
           content: [
