@@ -4,7 +4,12 @@ import { useState, useEffect, useCallback } from "react";
 import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { upload } from "@vercel/blob/client";
-import { normalizeName, uploadPathname, type UploadedFile } from "@/lib/upload";
+import {
+  MAX_UPLOAD_BYTES,
+  normalizeName,
+  uploadPathname,
+  type UploadedFile,
+} from "@/lib/upload";
 import { INGEST_STEPS, isTerminalRunStatus, type IngestRunProgress } from "@/lib/ingestSteps";
 import { Button } from "@/components/ui/button";
 import {
@@ -305,12 +310,39 @@ export default function UploadPage() {
     // Drop a name repeated within this selection before paying to upload it
     // twice. The server checks against the knowledge base independently.
     const seen = new Set<string>();
-    const files = Array.from(selected).filter((file) => {
+    const selectedOnce = Array.from(selected).filter((file) => {
       const key = normalizeName(file.name);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
+
+    // Names already in the table, as last loaded. Advisory only — the token
+    // route and /api/upload both re-check authoritatively — but catching a
+    // duplicate here is the only way the user learns *which* rule refused the
+    // file. @vercel/blob discards the response body of a failed token
+    // request, so a 409 naming the duplicate reaches the browser as the same
+    // opaque "Failed to retrieve the client token" as any other refusal.
+    const known = new Set(
+      (knowledgeBase?.items ?? []).map((item) => normalizeName(item.name))
+    );
+
+    const notices: string[] = [];
+    const files: File[] = [];
+    for (const file of selectedOnce) {
+      if (known.has(normalizeName(file.name))) {
+        notices.push(`"${file.name}" is already in the knowledge base`);
+        continue;
+      }
+      files.push(file);
+    }
+
+    if (files.length === 0) {
+      setStatus("error");
+      setNotices(notices);
+      setMessage("Nothing was uploaded");
+      return;
+    }
 
     setUploadProgress(files.map((file) => ({ fileName: file.name, percentage: 0 })));
 
@@ -318,7 +350,6 @@ export default function UploadPage() {
     // function caps its request body at 4.5 MB. Sequential rather than
     // parallel so one large PDF isn't competing with the next for bandwidth.
     const uploaded: UploadedFile[] = [];
-    const notices: string[] = [];
 
     for (const file of files) {
       try {
@@ -344,9 +375,15 @@ export default function UploadPage() {
         });
       } catch (error) {
         // A refused token (duplicate name, wrong type, too large) lands here
-        // before any bytes were sent.
+        // before any bytes were sent — but the SDK throws away the token
+        // route's JSON body, so the reason the server sent is already gone.
+        // Name the file and the possible causes rather than repeating the
+        // SDK's message, which identifies neither.
+        const detail = error instanceof Error ? error.message : "";
         notices.push(
-          error instanceof Error ? error.message : `${file.name}: upload failed`
+          detail.includes("client token")
+            ? `"${file.name}" was refused: it may already be in the knowledge base, not be a PDF, or exceed ${formatBytes(MAX_UPLOAD_BYTES)}`
+            : `"${file.name}": ${detail || "upload failed"}`
         );
       }
     }
