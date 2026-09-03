@@ -98,6 +98,24 @@ This is safe to run on its own because `extractGraph` takes the markdown, not th
 
 It writes no `chunks` count. That column belongs to whatever last embedded the document, so `recordMarkdownUrl` only ever touches `markdown_url`, and then only to self-heal a legacy row that had none and had to regenerate its Markdown.
 
+### Requesting a document that isn't there
+
+`request_document` is an MCP tool the model calls when `search_docs` and `search_graph` both come up empty — a gap in the corpus rather than a retrieval failure. It writes a row to `document_requests` and returns text that tells the model to say a request was *logged*, not that the document is now available.
+
+It records; it never fetches. `/mcp` is public (`middleware.ts` exempts it deliberately, for external MCP clients), so this is an unauthenticated write, and a tool that downloaded a model-supplied URL server-side would be an open SSRF proxy. The URL is stored as a suggestion and shown to the operator. Abuse is bounded by per-field length caps and a ceiling of 200 pending requests, and duplicate titles join the existing request instead of adding a row.
+
+`GET/POST /api/documentRequests` is the review queue, rendered on the upload page. Approving is the only thing that fetches, and it re-derives everything rather than trusting the request: the operator can replace the URL and the file name, the name is checked against `uploads` the same way a browser upload is, and the download goes through [lib/fetchDocument.ts](lib/fetchDocument.ts), which
+
+- requires `https:`,
+- resolves the host and refuses any answer in a loopback, private, CGNAT, link-local (including the cloud metadata address), multicast or unique-local range — checking IPv4-mapped IPv6 in both the dotted and the hex form the resolver actually returns,
+- follows redirects by hand, re-validating every hop, because `fetch`'s automatic following would check only the first URL and then chase a 302 into the private network,
+- requires a PDF content type, and
+- streams to Blob through a counter that aborts the transfer the moment it passes `MAX_UPLOAD_BYTES`, rather than discovering the size afterwards.
+
+On success it starts `ingestPdf` with the same `BlobInfo` shape a browser upload produces and hands the run ID back, so the request lands in the same per-step progress card as any other upload. A failed fetch flips the row to `failed` with the reason attached.
+
+`document_requests` is not created by application code — run [db/document_requests.sql](db/document_requests.sql) once against the database, as with `uploads`. Until then the queue endpoint returns empty with a notice saying so rather than an error.
+
 ### Browsing the knowledge graph
 
 `/graph` renders the whole extracted graph — every `(:Entity)-[:RELATES]->(:Entity)` in Neo4j, not the subgraph around one query the way `search_graph` does. `GET /api/graph` reads it with no embedding step and no search term, ordering edges by the combined degree of their endpoints so a graph past the cap is the well-connected core rather than an arbitrary slice (2,000 edges by default, `?limit=` up to 6,000). Nodes are derived from the returned edges, which loses nothing: `extractGraph` never persists an entity with no relationships.

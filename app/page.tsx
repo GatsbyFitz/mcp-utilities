@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2 } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { upload } from "@vercel/blob/client";
 import {
@@ -12,6 +12,7 @@ import {
   type UploadedFile,
 } from "@/lib/upload";
 import { INGEST_STEPS, isTerminalRunStatus, type IngestRunProgress } from "@/lib/ingestSteps";
+import type { DocumentRequest } from "@/lib/documentRequests";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -86,11 +87,51 @@ export default function UploadPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [reextractingAll, setReextractingAll] = useState(false);
   const [reextractingId, setReextractingId] = useState<string | null>(null);
+  const [requests, setRequests] = useState<DocumentRequest[]>([]);
+  const [requestsNotice, setRequestsNotice] = useState<string | null>(null);
+  const [loadingRequests, setLoadingRequests] = useState(false);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  // Per-request overrides of the URL and file name the model suggested. Keyed
+  // by request id so editing one row never disturbs another.
+  const [approveUrl, setApproveUrl] = useState<Record<string, string>>({});
+  const [approveName, setApproveName] = useState<Record<string, string>>({});
   const [trackedRuns, setTrackedRuns] = useState<TrackedRun[]>([]);
   const [runProgress, setRunProgress] = useState<Record<string, IngestRunProgress>>({});
   const [notices, setNotices] = useState<string[]>([]);
   const [uploadProgress, setUploadProgress] = useState<{ fileName: string; percentage: number }[]>([]);
   const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
+
+  // Both a browser upload and an approved document request start ingestion
+  // runs the same way, so both feed the same tracker.
+  const trackRuns = useCallback((started: TrackedRun[]) => {
+    setTrackedRuns((previous) => {
+      const known = new Set(previous.map((run) => run.runId));
+      const next = [...previous, ...started.filter((run) => !known.has(run.runId))];
+      try {
+        sessionStorage.setItem(TRACKED_RUNS_KEY, JSON.stringify(next));
+      } catch {
+        // Progress still works in this tab; only reload recovery is lost.
+      }
+      return next;
+    });
+  }, []);
+
+  const loadRequests = useCallback(async () => {
+    setLoadingRequests(true);
+    try {
+      const res = await fetch("/api/documentRequests", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Request queue failed: ${res.status}`);
+      }
+      setRequests((data.items ?? []) as DocumentRequest[]);
+      setRequestsNotice((data.notice as string) ?? null);
+    } catch (error) {
+      console.error("Error fetching document requests:", error);
+    } finally {
+      setLoadingRequests(false);
+    }
+  }, []);
 
   const refreshKnowledgeBase = useCallback(async () => {
     setRefreshing(true);
@@ -110,6 +151,10 @@ export default function UploadPage() {
   useEffect(() => {
     refreshKnowledgeBase();
   }, [refreshKnowledgeBase]);
+
+  useEffect(() => {
+    loadRequests();
+  }, [loadRequests]);
 
   // Recover runs from a reload mid-ingestion. Anything the runtime has since
   // forgotten comes back as "unknown" and simply stops being polled.
@@ -280,6 +325,53 @@ export default function UploadPage() {
       });
     } finally {
       setReextractingId(null);
+    }
+  }
+
+  async function handleResolveRequest(request: DocumentRequest, action: "approve" | "reject") {
+    if (
+      action === "approve" &&
+      !window.confirm(
+        `Fetch "${approveUrl[request.id] ?? request.sourceUrl ?? ""}" and ingest it as a document?`
+      )
+    ) {
+      return;
+    }
+    setResolvingId(request.id);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/documentRequests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: request.id,
+          action,
+          url: approveUrl[request.id],
+          fileName: approveName[request.id],
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Request ${action} failed: ${res.status}`);
+      }
+      if (action === "approve") {
+        // Ingestion has started; hand the run to the same progress card a
+        // browser upload uses.
+        trackRuns((data.runs ?? []) as TrackedRun[]);
+        setActionMessage({ text: `Fetching "${request.title}" and ingesting it.`, error: false });
+      } else {
+        setActionMessage({ text: `Rejected "${request.title}".`, error: false });
+      }
+      loadRequests();
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : `Could not ${action} the request`,
+        error: true,
+      });
+      // A failed fetch flips the row to "failed" server-side, so reload to show it.
+      loadRequests();
+    } finally {
+      setResolvingId(null);
     }
   }
 
@@ -502,17 +594,7 @@ export default function UploadPage() {
     // Deliberately no refreshKnowledgeBase() here: recordUpload is the last
     // step, so the rows cannot exist yet. The poll refreshes once the runs
     // actually finish.
-    const started = (data.runs ?? []) as TrackedRun[];
-    setTrackedRuns((previous) => {
-      const known = new Set(previous.map((run) => run.runId));
-      const next = [...previous, ...started.filter((run) => !known.has(run.runId))];
-      try {
-        sessionStorage.setItem(TRACKED_RUNS_KEY, JSON.stringify(next));
-      } catch {
-        // Progress still works in this tab; only reload recovery is lost.
-      }
-      return next;
-    });
+    trackRuns((data.runs ?? []) as TrackedRun[]);
   }
 
   return (
@@ -615,6 +697,134 @@ export default function UploadPage() {
                     onRetry={() => handleRetry(run.runId)}
                   />
                 ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {(requests.length > 0 || requestsNotice) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Inbox className="size-4" />
+                  Document requests
+                </CardTitle>
+                <CardDescription>
+                  Gaps the model found via <code>request_document</code>. Nothing is
+                  fetched until you approve it.
+                </CardDescription>
+                <CardAction>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={loadRequests}
+                    disabled={loadingRequests}
+                  >
+                    <RefreshCw className={loadingRequests ? "animate-spin" : ""} />
+                  </Button>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4">
+                {requestsNotice && (
+                  <p className="text-sm text-muted-foreground">{requestsNotice}</p>
+                )}
+                {requests.map((request) => {
+                  const pending = request.status === "pending";
+                  const busy = resolvingId === request.id;
+                  return (
+                    <div
+                      key={request.id}
+                      className="flex flex-col gap-2 rounded-lg border border-border p-3"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-sm font-medium break-words">{request.title}</p>
+                        <span
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${
+                            request.status === "pending"
+                              ? "bg-amber-500/15 text-amber-400"
+                              : request.status === "approved"
+                                ? "bg-green-500/15 text-green-400"
+                                : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          {request.status}
+                        </span>
+                      </div>
+                      {request.reason && (
+                        <p className="text-xs text-muted-foreground">{request.reason}</p>
+                      )}
+                      {request.statusDetail && (
+                        <p className="text-xs text-red-400">{request.statusDetail}</p>
+                      )}
+                      {request.requestedBy && (
+                        <p className="text-xs text-muted-foreground">
+                          Requested by {request.requestedBy}
+                        </p>
+                      )}
+
+                      {pending ? (
+                        <>
+                          {/* Prefilled from the model's suggestion, but always
+                              editable — the model guessed, you decide. */}
+                          <Input
+                            value={approveUrl[request.id] ?? request.sourceUrl ?? ""}
+                            onChange={(e) =>
+                              setApproveUrl((previous) => ({
+                                ...previous,
+                                [request.id]: e.target.value,
+                              }))
+                            }
+                            placeholder="https://… (PDF to fetch)"
+                            className="text-xs"
+                          />
+                          <Input
+                            value={approveName[request.id] ?? ""}
+                            onChange={(e) =>
+                              setApproveName((previous) => ({
+                                ...previous,
+                                [request.id]: e.target.value,
+                              }))
+                            }
+                            placeholder="File name (optional — derived from the URL)"
+                            className="text-xs"
+                          />
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => handleResolveRequest(request, "approve")}
+                              disabled={
+                                busy ||
+                                !(approveUrl[request.id] ?? request.sourceUrl ?? "").trim()
+                              }
+                            >
+                              {busy ? <Loader2 className="animate-spin" /> : <Check />}
+                              Approve &amp; fetch
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleResolveRequest(request, "reject")}
+                              disabled={busy}
+                            >
+                              <X />
+                              Reject
+                            </Button>
+                          </div>
+                        </>
+                      ) : (
+                        request.sourceUrl && (
+                          <a
+                            href={request.sourceUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="truncate text-xs text-muted-foreground hover:underline"
+                          >
+                            {request.sourceUrl}
+                          </a>
+                        )
+                      )}
+                    </div>
+                  );
+                })}
               </CardContent>
             </Card>
           )}
