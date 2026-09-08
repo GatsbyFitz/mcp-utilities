@@ -13,6 +13,8 @@ export const INGEST_STEPS = [
   { name: "contextualizeChunks", label: "Contextualising chunks" },
   { name: "createEmbeddings", label: "Embedding" },
   { name: "extractGraph", label: "Extracting graph" },
+  { name: "extractFigures", label: "Extracting figures" },
+  { name: "embedFigures", label: "Embedding figures" },
   { name: "recordUpload", label: "Recording" },
 ] as const;
 
@@ -24,6 +26,8 @@ export const RESUME_STEPS = [
   { name: "contextualizeChunks", label: "Contextualising chunks" },
   { name: "createEmbeddings", label: "Embedding" },
   { name: "extractGraph", label: "Extracting graph" },
+  { name: "extractFigures", label: "Extracting figures" },
+  { name: "embedFigures", label: "Embedding figures" },
   { name: "recordUpload", label: "Recording" },
 ] as const;
 

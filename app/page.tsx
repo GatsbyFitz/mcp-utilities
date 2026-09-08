@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { upload } from "@vercel/blob/client";
 import {
@@ -87,6 +87,8 @@ export default function UploadPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [reextractingAll, setReextractingAll] = useState(false);
   const [reextractingId, setReextractingId] = useState<string | null>(null);
+  const [figuresAll, setFiguresAll] = useState(false);
+  const [figuresId, setFiguresId] = useState<string | null>(null);
   const [requests, setRequests] = useState<DocumentRequest[]>([]);
   const [requestsNotice, setRequestsNotice] = useState<string | null>(null);
   const [loadingRequests, setLoadingRequests] = useState(false);
@@ -271,6 +273,61 @@ export default function UploadPage() {
       throw new Error(data.error ?? `Re-embed request failed: ${res.status}`);
     }
     return data as { queued: number; skipped: number };
+  }
+
+  async function postExtractFigures(id?: string) {
+    const res = await fetch("/api/extractFigures", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(id ? { id } : {}),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error ?? `Figure extraction request failed: ${res.status}`);
+    }
+    return data as { queued: number; skipped: number };
+  }
+
+  async function handleExtractFiguresAll() {
+    if (
+      !window.confirm(
+        "Extract figures for every document? This renders each page carrying a figure and embeds the crops \u2014 chunks, embeddings and the graph are left alone."
+      )
+    ) {
+      return;
+    }
+    setFiguresAll(true);
+    setActionMessage(null);
+    try {
+      const { queued, skipped } = await postExtractFigures();
+      setActionMessage({
+        text: `Queued ${queued} document(s) for figure extraction${skipped ? ` (${skipped} skipped, no PDF)` : ""}.`,
+        error: false,
+      });
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Figure extraction failed",
+        error: true,
+      });
+    } finally {
+      setFiguresAll(false);
+    }
+  }
+
+  async function handleExtractFiguresRow(id: string, name: string) {
+    setFiguresId(id);
+    setActionMessage(null);
+    try {
+      await postExtractFigures(id);
+      setActionMessage({ text: `Queued "${name}" for figure extraction.`, error: false });
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Figure extraction failed",
+        error: true,
+      });
+    } finally {
+      setFiguresId(null);
+    }
   }
 
   async function postReextract(id?: string) {
@@ -855,6 +912,16 @@ export default function UploadPage() {
               <Button
                 variant="outline"
                 size="sm"
+                onClick={handleExtractFiguresAll}
+                disabled={figuresAll || !knowledgeBase?.items.length}
+                title="Crops figures from each page and embeds them \u2014 chunks and the graph are untouched"
+              >
+                <ImageIcon className={figuresAll ? "animate-spin" : ""} />
+                {figuresAll ? "Queuing..." : "Extract figures"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={handleReembedAll}
                 disabled={reembeddingAll || !knowledgeBase?.items.length}
               >
@@ -953,6 +1020,21 @@ export default function UploadPage() {
                           >
                             <Share2 className={reextractingId === item.id ? "animate-spin" : ""} />
                             {reextractingId === item.id ? "Queuing..." : "Rebuild graph"}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleExtractFiguresRow(item.id, item.name)}
+                            disabled={
+                              figuresId === item.id ||
+                              figuresAll ||
+                              reembeddingId === item.id ||
+                              deletingId === item.id
+                            }
+                            title="Extract this document's figures without re-embedding it"
+                          >
+                            <ImageIcon className={figuresId === item.id ? "animate-spin" : ""} />
+                            {figuresId === item.id ? "Queuing..." : "Figures"}
                           </Button>
                           <Button
                             variant="outline"

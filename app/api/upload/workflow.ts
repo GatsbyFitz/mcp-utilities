@@ -4,6 +4,8 @@ import { createMarkdown, fetchMarkdown } from "./steps/pdfReader";
 import { contextualizeChunks } from "./steps/contextualizeChunks";
 import { createEmbeddings } from "./steps/createEmbeddings";
 import { extractGraph } from "./steps/extractGraph";
+import { extractFigures } from "./steps/extractFigures";
+import { embedFigures } from "./steps/embedFigures";
 import { markResumePoint, type ResumePoint } from "./steps/resumePoint";
 
 export async function ingestPdf(input: IngestInput) {
@@ -30,6 +32,13 @@ export async function ingestPdf(input: IngestInput) {
   // doesn't have to durably persist the whole document twice.
   const { entityCount, relationCount } = await extractGraph(input.fileName, markdown);
 
+  // Figures are additive: they carry their own vector-ID namespace, so nothing
+  // here moves a text chunk ID or the chunkIds extractGraph stored on Neo4j
+  // relationships. Placed after extractGraph so a figure failure cannot cost
+  // the graph, which is the more expensive of the two.
+  const figures = await extractFigures(input.fileName, blob.url, markdown);
+  const { figureCount } = await embedFigures(input.fileName, blob, markdown, figures);
+
   await recordUpload(input.fileName, input.sizeBytes, blob, chunkCount, markdownUrl);
 
   return {
@@ -38,6 +47,7 @@ export async function ingestPdf(input: IngestInput) {
     title,
     entities: entityCount,
     relations: relationCount,
+    figures: figureCount,
   };
 }
 
@@ -68,6 +78,13 @@ export async function resumeIngest(resume: ResumePoint) {
 
   const { entityCount, relationCount } = await extractGraph(resume.fileName, markdown);
 
+  // Figures are additive: they carry their own vector-ID namespace, so nothing
+  // here moves a text chunk ID or the chunkIds extractGraph stored on Neo4j
+  // relationships. Placed after extractGraph so a figure failure cannot cost
+  // the graph, which is the more expensive of the two.
+  const figures = await extractFigures(resume.fileName, resume.blob.url, markdown);
+  const { figureCount } = await embedFigures(resume.fileName, resume.blob, markdown, figures);
+
   await recordUpload(
     resume.fileName,
     resume.sizeBytes,
@@ -82,5 +99,6 @@ export async function resumeIngest(resume: ResumePoint) {
     title,
     entities: entityCount,
     relations: relationCount,
+    figures: figureCount,
   };
 }

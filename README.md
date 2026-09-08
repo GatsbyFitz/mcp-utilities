@@ -116,6 +116,20 @@ On success it starts `ingestPdf` with the same `BlobInfo` shape a browser upload
 
 `document_requests` is not created by application code — run [db/document_requests.sql](db/document_requests.sql) once against the database, as with `uploads`. Until then the queue endpoint returns empty with a notice saying so rather than an error.
 
+### Figures
+
+`createMarkdown` describes a diagram as `[Figure: ...]` and discards the pixels, so a question whose answer is a process flow used to retrieve, at best, a one-line caption. Two steps at the end of ingestion fix that.
+
+`extractFigures` renders only the pages that already carry a `[Figure: ...]` marker — the parse emits those and the page-break markers, so the pages worth rendering are known without an extra model call — asks the model where each figure sits on the page, and crops it. Rendering uses [mupdf](https://www.npmjs.com/package/mupdf), which is pure WASM: `.npmrc` sets `ignore-scripts=true` and native builds have to be allowlisted in `pnpm-workspace.yaml`, which is how the `unrs-resolver` deploy failure happened. A bounding box that is missing or implausibly small falls back to the whole page, since a page is worth more than a dropped figure or a sliver of one.
+
+`embedFigures` embeds each figure from its description **and** its pixels, through `providerOptions.google.content` — `gemini-embedding-2` accepts an array of parts per value (`{ text }`, `{ inlineData }`, `{ fileData }`). That keeps figures in the same model, the same 1536 dimensions and the same vector space as every text chunk, so there is no second index, no second credential and nothing to change on the query side: `search_docs` already embeds its query with this model. `inlineData` rather than `fileData`, because `fileUri` expects a Files API or GCS URI, not a public Blob URL.
+
+**Figures are additive, which is the point.** They use their own vector-ID namespace (`${fileName}#figure-${n}`, distinct from `chunkId`'s `${fileName}-${i}`), so no text chunk ID moves and every `chunkId` stored on a Neo4j relationship keeps resolving. Existing documents therefore gain figures through `POST /api/extractFigures` — **Extract figures** on the knowledge-base page, per row or for the whole corpus — with no re-ingest. It is also the cheap way to iterate on the figure prompt: re-running costs the page renders and one vision call per figure-bearing page, not a re-embed.
+
+A figure result renders as a Markdown image followed by its description, built by `figureLine()` in [lib/citations.ts](lib/citations.ts) so every tool emits it identically. Its PNGs live under `figures/<file name>/` in Blob — a prefix rather than a uuid-first leaf name, so `deleteDocument` can list and remove them instead of orphaning them.
+
+**Verify the gateway forwards `content` before trusting any of this**: run [scripts/verify-multimodal-embedding.ts](scripts/verify-multimodal-embedding.ts). If the option is dropped in transit the call still succeeds and still returns a 1536-dimension vector — it is just description-only, silently. The script embeds one description with and without an image and fails if the vectors match.
+
 ### Browsing the knowledge graph
 
 `/graph` renders the whole extracted graph — every `(:Entity)-[:RELATES]->(:Entity)` in Neo4j, not the subgraph around one query the way `search_graph` does. `GET /api/graph` reads it with no embedding step and no search term, ordering edges by the combined degree of their endpoints so a graph past the cap is the well-connected core rather than an arbitrary slice (2,000 edges by default, `?limit=` up to 6,000). Nodes are derived from the returned edges, which loses nothing: `extractGraph` never persists an entity with no relationships.
