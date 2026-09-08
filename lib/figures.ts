@@ -25,11 +25,39 @@ export function figureId(fileName: string, index: number): string {
   return `${fileName}#figure-${index}`;
 }
 
-/** Longest edge of a stored figure PNG. See extractFigures for why it matters. */
-export const MAX_FIGURE_EDGE_PX = 1024;
+// A figure is rendered twice, at two resolutions, for two different consumers.
+// They are not the same image and must not be collapsed into one: the API
+// limits below constrain what can be *embedded*, and nothing at all constrains
+// what can be *stored*.
 
-/** Rendering scale for the page a figure is cropped out of. */
+/**
+ * The stored PNG — what a reader opens from a citation to study a dense
+ * process diagram, so it is deliberately generous. ~288 DPI at scale 4.
+ */
+export const STORED_FIGURE_SCALE = 4;
+export const MAX_STORED_FIGURE_EDGE_PX = 2048;
+
+/**
+ * The copy sent as `inlineData` when embedding. Never stored, never linked,
+ * never shown. Small because it shares an 8,192-token request budget with the
+ * description and with up to three other figures.
+ */
+export const MAX_EMBED_FIGURE_EDGE_PX = 768;
+
+/** Rendering scale for the whole page handed to the model for figure detection. */
 export const FIGURE_RENDER_SCALE = 2;
+
+/**
+ * Figures per embedding request. Derived from two `gemini-embedding-2` API
+ * limits, not a throughput knob — raising it to save round trips reintroduces
+ * a hard failure:
+ *   - a request may carry at most 6 images, and
+ *   - the *overall* input budget is 8,192 tokens, shared between every image
+ *     and every description in the request.
+ * Four leaves headroom under both. `embedMany` sends all values in one request
+ * regardless of image count, so the batching has to happen at the call site.
+ */
+export const MAX_FIGURES_PER_EMBED_REQUEST = 4;
 
 /** Ceiling on pages rendered per document, so one pathological PDF can't run away. */
 export const MAX_FIGURE_PAGES = 40;
@@ -56,10 +84,14 @@ export interface ExtractedFigure {
   /** 1-indexed printed page the figure sits on. */
   page: number;
   description: string;
-  /** Public Blob URL of the cropped PNG. */
+  /** Public Blob URL of the high-resolution crop. This is the one people see. */
   imageUrl: string;
-  /** The same PNG, base64, handed to the embedding step so it needn't refetch. */
-  pngBase64: string;
+  /**
+   * A *separate*, smaller render of the same region, base64, for the embedding
+   * request only. Named for its purpose so it cannot be mistaken for the
+   * stored image and written to Blob by accident.
+   */
+  embedPngBase64: string;
 }
 
 /**

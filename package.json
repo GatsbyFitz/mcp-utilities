@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "type-check": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "verify:multimodal": "node --env-file=.env.local scripts/verify-multimodal-embedding.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.10",

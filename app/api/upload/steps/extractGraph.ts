@@ -3,6 +3,7 @@ import * as z from "zod/v4";
 import { writeGraph } from "@/lib/graph";
 import { chunkId, chunkText, extractTitle } from "@/lib/chunking";
 import { mapPool } from "@/lib/pool";
+import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/embedding";
 
 // ---------------------------------------------------------------------------
 // Step 4: Extract entities + relationships into the Neo4j knowledge graph
@@ -160,13 +161,13 @@ export async function extractGraph(fileName: string, markdown: string) {
   // convention used for chunks (RETRIEVAL_DOCUMENT here, RETRIEVAL_QUERY in
   // search_graph). Including the type gives the short name some context.
   const { embeddings } = await embedMany({
-    model: "google/gemini-embedding-2",
+    model: EMBEDDING_MODEL,
     values: names.map((name) => {
       const type = entityTypes.get(name);
       return type ? `entity: ${name} | type: ${type}` : `entity: ${name}`;
     }),
     providerOptions: {
-      google: { outputDimensionality: 1536},
+      google: { outputDimensionality: EMBEDDING_DIMENSIONS},
     },
   });
 

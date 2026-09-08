@@ -8,7 +8,9 @@ import {
   FIGURE_RENDER_SCALE,
   MAX_FIGURES_PER_PAGE,
   MAX_FIGURE_DESCRIPTION,
-  MAX_FIGURE_EDGE_PX,
+  MAX_EMBED_FIGURE_EDGE_PX,
+  MAX_STORED_FIGURE_EDGE_PX,
+  STORED_FIGURE_SCALE,
   figureBlobPrefix,
   figurePagesFrom,
   type ExtractedFigure,
@@ -126,10 +128,19 @@ export async function extractFigures(
           const description = figure.description.trim().slice(0, MAX_FIGURE_DESCRIPTION);
           if (!description) return null;
 
-          const png = cropPage(mupdf, loaded, bounds, figure.bbox);
+          // Two renders of the same clip rectangle, not one render downscaled:
+          // mupdf rasterises from the PDF each time, so the small copy costs a
+          // little CPU and the stored copy loses nothing to its existence.
+          const stored = cropPage(
+            mupdf, loaded, bounds, figure.bbox, STORED_FIGURE_SCALE, MAX_STORED_FIGURE_EDGE_PX
+          );
+          const forEmbedding = cropPage(
+            mupdf, loaded, bounds, figure.bbox, STORED_FIGURE_SCALE, MAX_EMBED_FIGURE_EDGE_PX
+          );
+
           const blob = await put(
             `${figureBlobPrefix(fileName)}${uuidv4()}-p${page}-${n}.png`,
-            png,
+            stored,
             { access: "public", addRandomSuffix: false, contentType: "image/png" }
           );
 
@@ -137,7 +148,7 @@ export async function extractFigures(
             page,
             description,
             imageUrl: blob.url,
-            pngBase64: png.toString("base64"),
+            embedPngBase64: forEmbedding.toString("base64"),
           } satisfies ExtractedFigure;
         })
       );
@@ -170,7 +181,9 @@ function cropPage(
   mupdf: typeof import("mupdf"),
   page: import("mupdf").Page,
   bounds: [number, number, number, number],
-  bbox: number[]
+  bbox: number[],
+  maxScale: number,
+  maxEdgePx: number
 ): Buffer {
   const [pageX0, pageY0, pageX1, pageY1] = bounds;
   const width = pageX1 - pageX0;
@@ -185,17 +198,27 @@ function cropPage(
       ] as const)
     : ([pageX0, pageY0, pageX1, pageY1] as const);
 
-  // Keep the longest edge bounded: this PNG is about to be base64'd into an
-  // embedding request body, so its size is a request-size constraint rather
-  // than a display preference.
+  // Scale up to `maxScale`, backing off only far enough to keep the longest
+  // edge within `maxEdgePx`. The caller decides which ceiling applies: a
+  // generous one for the image that gets stored and read, a small one for the
+  // copy that has to fit in an embedding request.
   const longest = Math.max(region[2] - region[0], region[3] - region[1]);
-  const scale = Math.min(FIGURE_RENDER_SCALE, MAX_FIGURE_EDGE_PX / Math.max(longest, 1));
+  const scale = Math.min(maxScale, maxEdgePx / Math.max(longest, 1));
+
+  // Derive the box from its origin plus a bounded width/height rather than by
+  // rounding both corners: flooring the near corner and ceiling the far one
+  // grows the box by up to a pixel on each axis, which put a "768px" render at
+  // 769. Harmless against a self-imposed budget, but not against an API limit.
+  const originX = Math.floor(region[0] * scale);
+  const originY = Math.floor(region[1] * scale);
+  const targetWidth = Math.min(Math.ceil((region[2] - region[0]) * scale), maxEdgePx);
+  const targetHeight = Math.min(Math.ceil((region[3] - region[1]) * scale), maxEdgePx);
 
   const target: [number, number, number, number] = [
-    Math.floor(region[0] * scale),
-    Math.floor(region[1] * scale),
-    Math.ceil(region[2] * scale),
-    Math.ceil(region[3] * scale),
+    originX,
+    originY,
+    originX + targetWidth,
+    originY + targetHeight,
   ];
 
   const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, target, false);

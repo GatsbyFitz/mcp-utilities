@@ -4,6 +4,7 @@ import { embed } from "ai";
 import { vectorIndex } from "@/lib/vector";
 import { withSession } from "@/lib/graph";
 import { toCitation, citationLine, sourceList, type ChunkMetadata } from "@/lib/citations";
+import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/embedding";
 
 interface RelationRow {
   source: string;
@@ -46,10 +47,10 @@ export function registerSearchGraphTool(server: McpServer): void {
     async ({ query, maxHops, maxChunks }) => {
       try {
         const { embedding } = await embed({
-          model: "google/gemini-embedding-2",
+          model: EMBEDDING_MODEL,
           value: `task: search result | query: ${query}`,
           providerOptions: {
-            google: { outputDimensionality: 1536, taskType: "RETRIEVAL_QUERY" },
+            google: { outputDimensionality: EMBEDDING_DIMENSIONS, taskType: "RETRIEVAL_QUERY" },
           },
         });
 

@@ -6,6 +6,7 @@ import { vectorIndex } from "@/lib/vector";
 import type { ChunkMetadata } from "@/lib/citations";
 import { toCitation, citationLine, figureLine, sourceList } from "@/lib/citations";
 import { sparseVector } from "@/lib/sparse";
+import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/embedding";
 
 
 // The rerank provider rejects any single document longer than 32,000 with a
@@ -71,9 +72,9 @@ export function registerSearchDocsTool(server: McpServer): void {
     async ({ query, topK, topN }) => {
       try {
         const { embedding } = await embed({
-          model: "google/gemini-embedding-2",
+          model: EMBEDDING_MODEL,
           value: `task: search result | query: ${query}`,
-          providerOptions: { google: { outputDimensionality: 1536, taskType: "RETRIEVAL_QUERY" } },
+          providerOptions: { google: { outputDimensionality: EMBEDDING_DIMENSIONS, taskType: "RETRIEVAL_QUERY" } },
         });
 
         const matches = await vectorIndex.query({
