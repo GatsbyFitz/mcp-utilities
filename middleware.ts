@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 
 // Page routes gated by redirecting to the login screen.
-const PROTECTED_PAGES = ["/"];
+const PROTECTED_PAGES = ["/", "/graph"];
 
 /**
  * The only API paths reachable without a session. NextAuth's own endpoints

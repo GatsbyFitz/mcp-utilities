@@ -55,3 +55,11 @@ export async function updateUploadAfterReembed(
 }
 
  
+// Re-extracting the graph touches no chunks, so it must not write `chunks` —
+// that column belongs to whatever last embedded the document. This exists only
+// to self-heal a legacy row that had no markdown_url and had to regenerate it.
+export async function recordMarkdownUrl(id: string, markdownUrl: string) {
+  "use step";
+
+  await sql`UPDATE uploads SET markdown_url = ${markdownUrl} WHERE id = ${id}`;
+}
