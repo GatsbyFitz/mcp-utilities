@@ -3,6 +3,8 @@ import * as z from "zod/v4";
 import { v4 as uuidv4 } from "uuid";
 import { sql } from "@/lib/db";
 import {
+  isMissingTable,
+  MISSING_TABLE_MESSAGE,
   MAX_PENDING_REQUESTS,
   MAX_REASON_LENGTH,
   MAX_TITLE_LENGTH,
@@ -144,6 +146,35 @@ export function registerRequestDocumentTool(server: McpServer): void {
         };
       } catch (error) {
         console.error("[request_document] failed:", error);
+
+        // One known, actionable condition, lifted out of the generic branch.
+        // Left there it reaches the model as `relation "document_requests"
+        // does not exist` — which it cannot act on, may relay as "the feature
+        // is broken", and which puts a raw driver error on a public
+        // unauthenticated endpoint for no benefit.
+        if (isMissingTable(error)) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `The document request queue is not set up on this server, so ` +
+                  `"${title.trim()}" was NOT recorded. Tell the user the request could ` +
+                  `not be logged — do not imply it is queued or that the document ` +
+                  `will be added. An operator needs to run db/document_requests.sql ` +
+                  `against the database first.`,
+              },
+            ],
+            structuredContent: {
+              created: false,
+              reason: "queue-not-provisioned",
+              title: title.trim(),
+            },
+          };
+        }
+
+        // Everything else keeps the real message, per .claude/rules/mcp-tools.md.
         return {
           isError: true,
           content: [

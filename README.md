@@ -203,4 +203,16 @@ There is no test framework in this repo — `pnpm type-check` and `pnpm lint` ar
 
 Required in `.env.local` (gitignored): `UPSTASH_VECTOR_REST_URL`/`_TOKEN`, `NEO4J_URI`/`_USERNAME`/`_PASSWORD`/`_DATABASE`, `DATABASE_URL`, `BLOB_READ_WRITE_TOKEN`, `AI_GATEWAY_API_KEY`.
 
-The Neon `uploads` table and the Neo4j `entity_names` vector index must already exist in the provisioned services — nothing in this repo creates them.
+`GOOGLE_GENERATIVE_AI_API_KEY` is optional: setting it routes only the multimodal figure embedding through `@ai-sdk/google` directly instead of the gateway (see [lib/embedding.ts](lib/embedding.ts)). Leave it unset unless `pnpm verify:multimodal` says the gateway is dropping the image.
+
+## Provisioning done by hand
+
+Nothing in this repo creates schema. Three things must already exist in the provisioned services, and each fails differently if it does not:
+
+| What | Created by | Symptom if missing |
+| --- | --- | --- |
+| Neon `uploads` table | manually | ingestion fails at `recordUpload`, the last step, after all the model spend |
+| Neo4j `entity_names` vector index | manually | `search_graph` returns nothing, with no error |
+| Neon `document_requests` table | **[db/document_requests.sql](db/document_requests.sql)** | the review queue reads empty with a notice; `request_document` refuses and says which file to run |
+
+The last one is the easy one to miss, because the failure surfaces at the far end of the system — inside an MCP tool call from a model, rather than anywhere near the database. Run it once and the queue works.
