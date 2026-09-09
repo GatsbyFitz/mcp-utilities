@@ -104,6 +104,10 @@ It writes no `chunks` count. That column belongs to whatever last embedded the d
 
 It records; it never fetches. `/mcp` is public (`middleware.ts` exempts it deliberately, for external MCP clients), so this is an unauthenticated write, and a tool that downloaded a model-supplied URL server-side would be an open SSRF proxy. The URL is stored as a suggestion and shown to the operator. Abuse is bounded by per-field length caps and a ceiling of 200 pending requests, and duplicate titles join the existing request instead of adding a row.
 
+The tool asks the model to do two things before it will record anything. It must set `checkedIndexedDocuments`, having read `kb://documents` — search missing a document is not proof it is absent, since a file name rarely resembles the official title. And it is pressed to supply `sourceUrl`, a direct link to the PDF: a request carrying one can be approved and ingested in a single action, while one without it stalls until a human finds the file, so the response says which of the two it produced and the queue flags the ones still needing a link.
+
+Neither is taken on trust. The server re-checks the corpus itself, comparing *tokens* rather than substrings — a request carries a prose title ("B2B Procedure: Technical Delivery Specification") while the corpus stores a file name ("B2B-Procedure-Technical-Delivery-Spec-v3.2.pdf"), and no substring of one appears in the other, which is why the original `LIKE` check never fired. A likely match is returned to the model with its overlap score instead of a request being queued.
+
 `GET/POST /api/documentRequests` is the review queue, rendered on the upload page. Approving is the only thing that fetches, and it re-derives everything rather than trusting the request: the operator can replace the URL and the file name, the name is checked against `uploads` the same way a browser upload is, and the download goes through [lib/fetchDocument.ts](lib/fetchDocument.ts), which
 
 - requires `https:`,

@@ -820,6 +820,14 @@ export default function UploadPage() {
 
                       {pending ? (
                         <>
+                          {!request.sourceUrl && (
+                            // The request cannot be approved until someone
+                            // supplies a link, so say so rather than leaving a
+                            // disabled button to explain itself.
+                            <p className="text-xs text-amber-400">
+                              No source URL — find a direct link to the PDF to approve this.
+                            </p>
+                          )}
                           {/* Prefilled from the model's suggestion, but always
                               editable — the model guessed, you decide. */}
                           <Input
