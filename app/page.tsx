@@ -43,6 +43,8 @@ type KnowledgeBaseItem = {
   blobUrl: string | null;
   blobDownloadUrl: string | null;
   blobPath: string | null;
+  /** Figures indexed for this document; null when the count could not be read. */
+  figures: number | null;
 };
 
 type KnowledgeBase = {
@@ -959,6 +961,7 @@ export default function UploadPage() {
                   <TableRow>
                     <TableHead>Name</TableHead>
                     <TableHead className="text-right">Chunks</TableHead>
+                    <TableHead className="text-right">Figures</TableHead>
                     <TableHead className="text-right">Size</TableHead>
                     <TableHead>Uploaded</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
@@ -982,6 +985,18 @@ export default function UploadPage() {
                         )}
                       </TableCell>
                       <TableCell className="text-right">{item.chunks}</TableCell>
+                      <TableCell className="text-right">
+                        {item.figures === null ? (
+                          // Not the same as zero: the index could not be read.
+                          <span className="text-muted-foreground" title="Figure count unavailable">
+                            —
+                          </span>
+                        ) : item.figures === 0 ? (
+                          <span className="text-muted-foreground">0</span>
+                        ) : (
+                          item.figures
+                        )}
+                      </TableCell>
                       <TableCell className="text-right whitespace-nowrap">
                         {formatBytes(item.sizeBytes)}
                       </TableCell>

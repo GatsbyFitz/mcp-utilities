@@ -25,6 +25,20 @@ export function figureId(fileName: string, index: number): string {
   return `${fileName}#figure-${index}`;
 }
 
+/**
+ * The document a figure vector belongs to, or null if the id is not a figure.
+ *
+ * The inverse of `figureId`. Splits on the *last* separator rather than the
+ * first, so a file name that itself contains "#figure-" cannot truncate the
+ * name it returns.
+ */
+export function documentOfFigureId(id: string): string | null {
+  const at = id.lastIndexOf("#figure-");
+  if (at <= 0) return null;
+  const index = id.slice(at + "#figure-".length);
+  return /^\d+$/.test(index) ? id.slice(0, at) : null;
+}
+
 // A figure is rendered twice, at two resolutions, for two different consumers.
 // They are not the same image and must not be collapsed into one: the API
 // limits below constrain what can be *embedded*, and nothing at all constrains
