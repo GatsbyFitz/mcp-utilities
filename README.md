@@ -104,6 +104,10 @@ It writes no `chunks` count. That column belongs to whatever last embedded the d
 
 It records; it never fetches. `/mcp` is public (`middleware.ts` exempts it deliberately, for external MCP clients), so this is an unauthenticated write, and a tool that downloaded a model-supplied URL server-side would be an open SSRF proxy. The URL is stored as a suggestion and shown to the operator. Abuse is bounded by per-field length caps and a ceiling of 200 pending requests, and duplicate titles join the existing request instead of adding a row.
 
+The tool asks the model to do two things before it will record anything. It must set `checkedIndexedDocuments`, having read `kb://documents` — search missing a document is not proof it is absent, since a file name rarely resembles the official title. And it is pressed to supply `sourceUrl`, a direct link to the PDF: a request carrying one can be approved and ingested in a single action, while one without it stalls until a human finds the file, so the response says which of the two it produced and the queue flags the ones still needing a link.
+
+Neither is taken on trust. The server re-checks the corpus itself, comparing *tokens* rather than substrings — a request carries a prose title ("B2B Procedure: Technical Delivery Specification") while the corpus stores a file name ("B2B-Procedure-Technical-Delivery-Spec-v3.2.pdf"), and no substring of one appears in the other, which is why the original `LIKE` check never fired. A likely match is returned to the model with its overlap score instead of a request being queued.
+
 `GET/POST /api/documentRequests` is the review queue, rendered on the upload page. Approving is the only thing that fetches, and it re-derives everything rather than trusting the request: the operator can replace the URL and the file name, the name is checked against `uploads` the same way a browser upload is, and the download goes through [lib/fetchDocument.ts](lib/fetchDocument.ts), which
 
 - requires `https:`,
@@ -115,6 +119,28 @@ It records; it never fetches. `/mcp` is public (`middleware.ts` exempts it delib
 On success it starts `ingestPdf` with the same `BlobInfo` shape a browser upload produces and hands the run ID back, so the request lands in the same per-step progress card as any other upload. A failed fetch flips the row to `failed` with the reason attached.
 
 `document_requests` is not created by application code — run [db/document_requests.sql](db/document_requests.sql) once against the database, as with `uploads`. Until then the queue endpoint returns empty with a notice saying so rather than an error.
+
+### Figures
+
+`createMarkdown` describes a diagram as `[Figure: ...]` and discards the pixels, so a question whose answer is a process flow used to retrieve, at best, a one-line caption. Two steps at the end of ingestion fix that.
+
+`extractFigures` renders only the pages that already carry a `[Figure: ...]` marker — the parse emits those and the page-break markers, so the pages worth rendering are known without an extra model call — asks the model where each figure sits on the page, and crops it. Rendering uses [mupdf](https://www.npmjs.com/package/mupdf), which is pure WASM: `.npmrc` sets `ignore-scripts=true` and native builds have to be allowlisted in `pnpm-workspace.yaml`, which is how the `unrs-resolver` deploy failure happened. A bounding box that is missing or implausibly small falls back to the whole page, since a page is worth more than a dropped figure or a sliver of one.
+
+Each figure is rendered **twice, at two resolutions, for two different consumers** — they are not the same image and must not be collapsed into one. The stored PNG is deliberately generous (scale 4, ~288 DPI, capped at 2048px on the longest edge) because it is what a reader opens to study a dense diagram, and no API limit applies to it. A second, smaller render (768px) exists only as the `inlineData` part of the embedding request. Because mupdf rasterises from the PDF each time, the small copy is a fresh render of the same clip rectangle rather than a downscale, so the stored image loses nothing to its existence.
+
+`embedFigures` embeds each figure from its description **and** its pixels, through `providerOptions.google.content` — `gemini-embedding-2` is natively multimodal and takes an array of parts per value, aggregating the parts of one entry into a single vector. That keeps figures in the same model, the same 1536 dimensions and the same vector space as every text chunk, so there is no second index, no second credential and nothing to change on the query side: `search_docs` already embeds its query with this model. `inlineData` rather than `fileData`, because `fileUri` expects a Files API or GCS URI, not a public Blob URL. The model id lives in [lib/embedding.ts](lib/embedding.ts) and is shared with `createEmbeddings` — note it is `gemini-embedding-2`, *not* the `-preview` id used in the provider's multimodal example, since figures must sit in the same space as the chunks they are ranked against.
+
+**The API limits shape the batching.** A request may carry at most 6 images, and the *overall* input budget is 8,192 tokens shared across every image and description in it. `embedMany` puts all values in one HTTP request regardless of image count, so `embedFigures` batches at `MAX_FIGURES_PER_EMBED_REQUEST` (4, leaving headroom under both). That constant is derived from the API, not a throughput knob — raising it to save round trips brings back a hard rejection on any document with more than six figures. `values` and `content` are positionally paired and sliced together, since misaligning them would attach every vector to the wrong figure's metadata with no error.
+
+**Figures are additive, which is the point.** They use their own vector-ID namespace (`${fileName}#figure-${n}`, distinct from `chunkId`'s `${fileName}-${i}`), so no text chunk ID moves and every `chunkId` stored on a Neo4j relationship keeps resolving. Existing documents therefore gain figures through `POST /api/extractFigures` — **Extract figures** on the knowledge-base page, per row or for the whole corpus — with no re-ingest. It is also the cheap way to iterate on the figure prompt: re-running costs the page renders and one vision call per figure-bearing page, not a re-embed.
+
+The knowledge base table shows a **Figures** count per document. It is counted from the vector index rather than stored on the `uploads` row alongside `chunks`: Upstash has no count-by-filter (`range` takes a prefix and cursor but no metadata filter, and `info()` reports only totals), but figure ids are `${fileName}#figure-${n}`, so one id-only scan of the index yields counts for every document at once — one request per 1,000 vectors. The stronger reason is that a stored count is a claim about the index that nothing keeps true: a partly-failed `embedFigures`, a re-extraction finding fewer figures, or a manual delete would all leave it quietly wrong. A dash rather than `0` means the count could not be read, which is not the same as having no figures.
+
+A figure result renders as a Markdown image followed by its description, built by `figureLine()` in [lib/citations.ts](lib/citations.ts) so every tool emits it identically. Its PNGs live under `figures/<file name>/` in Blob — a prefix rather than a uuid-first leaf name, so `deleteDocument` can list and remove them instead of orphaning them.
+
+**`pnpm verify:multimodal` checks the image is really reaching the model.** If `content` is dropped anywhere in transit the call still succeeds and still returns a 1536-dimension vector — it has simply never seen the image, and nothing throws or logs. That is not a breakage: `values` still carries the description, so figures stay retrievable, cited and displayed. What it decides is whether you are getting the multimodal upgrade you are paying request payload for, and it stops "multimodal didn't help on this corpus" being concluded about a path that was never switched on.
+
+[The script](scripts/verify-multimodal-embedding.mjs) runs in two stages because there are two places it can be lost and the fix differs. Stage A stubs `fetch` and asserts what the SDK *would* send — offline, no credentials, and it doubles as the only guard on the image-per-request batching, which is invisible from the call site. Stage B needs `AI_GATEWAY_API_KEY` and embeds one description with and without an image, failing if the vectors match; it skips cleanly without a key. If Stage B fails, setting `GOOGLE_GENERATIVE_AI_API_KEY` routes this one call through `@ai-sdk/google` directly and removes the gateway hop entirely.
 
 ### Browsing the knowledge graph
 
@@ -183,4 +209,16 @@ There is no test framework in this repo — `pnpm type-check` and `pnpm lint` ar
 
 Required in `.env.local` (gitignored): `UPSTASH_VECTOR_REST_URL`/`_TOKEN`, `NEO4J_URI`/`_USERNAME`/`_PASSWORD`/`_DATABASE`, `DATABASE_URL`, `BLOB_READ_WRITE_TOKEN`, `AI_GATEWAY_API_KEY`.
 
-The Neon `uploads` table and the Neo4j `entity_names` vector index must already exist in the provisioned services — nothing in this repo creates them.
+`GOOGLE_GENERATIVE_AI_API_KEY` is optional: setting it routes only the multimodal figure embedding through `@ai-sdk/google` directly instead of the gateway (see [lib/embedding.ts](lib/embedding.ts)). Leave it unset unless `pnpm verify:multimodal` says the gateway is dropping the image.
+
+## Provisioning done by hand
+
+Nothing in this repo creates schema. Three things must already exist in the provisioned services, and each fails differently if it does not:
+
+| What | Created by | Symptom if missing |
+| --- | --- | --- |
+| Neon `uploads` table | manually | ingestion fails at `recordUpload`, the last step, after all the model spend |
+| Neo4j `entity_names` vector index | manually | `search_graph` returns nothing, with no error |
+| Neon `document_requests` table | **[db/document_requests.sql](db/document_requests.sql)** | the review queue reads empty with a notice; `request_document` refuses and says which file to run |
+
+The last one is the easy one to miss, because the failure surfaces at the far end of the system — inside an MCP tool call from a model, rather than anywhere near the database. Run it once and the queue works.

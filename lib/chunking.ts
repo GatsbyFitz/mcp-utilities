@@ -52,8 +52,15 @@ export function stripPageMarkers(text: string): { text: string; breaks: PageBrea
   return { text: stripped, breaks };
 }
 
-/** The 1-indexed page in effect at an offset into the stripped text. */
-function pageAt(breaks: PageBreak[], offset: number): number {
+/**
+ * The 1-indexed page in effect at an offset into the stripped text.
+ *
+ * Exported for `lib/figures.ts`, which needs to know which page a
+ * `[Figure: ...]` marker sits on. Read-only with respect to chunking — it does
+ * not participate in boundary decisions, so exporting it cannot affect the
+ * chunking invariant.
+ */
+export function pageAt(breaks: PageBreak[], offset: number): number {
   let page = 1;
   for (const brk of breaks) {
     if (brk.offset > offset) break;

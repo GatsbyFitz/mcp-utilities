@@ -4,8 +4,9 @@ import { embed, rerank } from "ai";
 import { WeightingStrategy } from "@upstash/vector";
 import { vectorIndex } from "@/lib/vector";
 import type { ChunkMetadata } from "@/lib/citations";
-import { toCitation, citationLine, sourceList } from "@/lib/citations";
+import { toCitation, citationLine, figureLine, sourceList } from "@/lib/citations";
 import { sparseVector } from "@/lib/sparse";
+import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/embedding";
 
 
 // The rerank provider rejects any single document longer than 32,000 with a
@@ -57,7 +58,11 @@ export function registerSearchDocsTool(server: McpServer): void {
         "results, cite claims using the document title, version, and page " +
         "range (e.g. 'Metering Provider Services SLP v2.0, pp. 10\u201311'), " +
         "and include each document's URL at most once. If no URL is present " +
-        "for a document, say so rather than inventing one.",
+        "for a document, say so rather than inventing one. Some results are " +
+        "figures cropped from a page \u2014 a diagram, flowchart or chart \u2014 " +
+        "rendered as an image followed by a description of it. Cite a figure " +
+        "by its document and page like any other result, and show the image " +
+        "rather than only describing it.",
       inputSchema: z.object({
         query: z.string().min(2).max(1000),
         topK: z.number().int().min(1).max(100).default(25),
@@ -67,9 +72,9 @@ export function registerSearchDocsTool(server: McpServer): void {
     async ({ query, topK, topN }) => {
       try {
         const { embedding } = await embed({
-          model: "google/gemini-embedding-2",
+          model: EMBEDDING_MODEL,
           value: `task: search result | query: ${query}`,
-          providerOptions: { google: { outputDimensionality: 1536, taskType: "RETRIEVAL_QUERY" } },
+          providerOptions: { google: { outputDimensionality: EMBEDDING_DIMENSIONS, taskType: "RETRIEVAL_QUERY" } },
         });
 
         const matches = await vectorIndex.query({
@@ -139,10 +144,13 @@ export function registerSearchDocsTool(server: McpServer): void {
         // Compact, model-friendly rendering. Models cite what they can read;
         // a numbered list with a citation header per result beats raw JSON.
         const rendered = results
-          .map(
-            (r) =>
-              `${citationLine(r.n, r.citation, r.score)}\n${r.text.trim()}`
-          )
+          .map((r) => {
+            // A figure renders as its image plus the description that was
+            // embedded alongside it; a text chunk is unchanged.
+            const image = figureLine(r.citation);
+            const body = image ? `${image}\n${r.text.trim()}` : r.text.trim();
+            return `${citationLine(r.n, r.citation, r.score)}\n${body}`;
+          })
           .join("\n\n---\n\n");
 
         // Deduplicated source list, rendered as Markdown links by lib/citations

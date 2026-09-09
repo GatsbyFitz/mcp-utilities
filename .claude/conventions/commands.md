@@ -6,9 +6,12 @@ pnpm dev              # Next.js dev server on http://localhost:3000
 pnpm build
 pnpm type-check       # tsc --noEmit
 pnpm lint             # eslint (next/core-web-vitals; no-explicit-any is disabled)
+pnpm verify:multimodal # checks the figure embeddings actually carry their image
 ```
 
 There is no test framework in this repo. `pnpm type-check` and `pnpm lint` are the only automated verification available — run both after changes.
+
+`pnpm verify:multimodal` is the one exception: a standalone check that figure embeddings really carry their image. Its first stage stubs `fetch` and asserts what the SDK *would* send, so it runs offline with no credentials and also guards the image-per-request batching in `embedFigures`; the second stage needs `AI_GATEWAY_API_KEY` and skips without it. See [scripts/verify-multimodal-embedding.mjs](../../scripts/verify-multimodal-embedding.mjs).
 
 ## Testing MCP tools locally
 

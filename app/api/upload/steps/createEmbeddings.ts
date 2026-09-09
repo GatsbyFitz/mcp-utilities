@@ -9,6 +9,7 @@ import { BlobInfo } from "./recordUpload";
 import { chunkId, chunkTextWithPages, extractTitle } from "@/lib/chunking";
 import { documentCitationMeta } from "@/lib/documentMeta";
 import { sparseVector } from "@/lib/sparse";
+import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/embedding";
 
 export async function createEmbeddings(
   fileName: string,
@@ -32,10 +33,10 @@ export async function createEmbeddings(
   });
 
   const { embeddings } = await embedMany({
-    model: "google/gemini-embedding-2",
+    model: EMBEDDING_MODEL,
     values: contextualized.map((text) => `title: ${title} | text: ${text}`),
     providerOptions: {
-      google: { outputDimensionality: 1536, taskType: "RETRIEVAL_DOCUMENT" },
+      google: { outputDimensionality: EMBEDDING_DIMENSIONS, taskType: "RETRIEVAL_DOCUMENT" },
     },
   });
 

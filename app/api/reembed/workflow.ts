@@ -4,6 +4,8 @@ import { createMarkdown, fetchMarkdown } from "../upload/steps/pdfReader";
 import { contextualizeChunks } from "../upload/steps/contextualizeChunks";
 import { createEmbeddings } from "../upload/steps/createEmbeddings";
 import { extractGraph } from "../upload/steps/extractGraph";
+import { extractFigures } from "../upload/steps/extractFigures";
+import { embedFigures } from "../upload/steps/embedFigures";
 
 export interface ReembedInput {
   id: string;
@@ -38,6 +40,10 @@ export async function reembedDocument(input: ReembedInput) {
   // in sync between Upstash and Neo4j — see the chunking invariant in CLAUDE.md.
   const { entityCount, relationCount } = await extractGraph(input.fileName, markdown);
 
+  // Same tail as ingestPdf and resumeIngest — see the note on resumeIngest.
+  const figures = await extractFigures(input.fileName, blob.url, markdown);
+  const { figureCount } = await embedFigures(input.fileName, blob, markdown, figures);
+
   await updateUploadAfterReembed(input.id, chunkCount, markdownUrl);
 
   return {
@@ -46,5 +52,6 @@ export async function reembedDocument(input: ReembedInput) {
     title,
     entities: entityCount,
     relations: relationCount,
+    figures: figureCount,
   };
 }

@@ -14,6 +14,10 @@ interface ChunkMetadata {
   version?: string;
   publisher?: string;
   effectiveDate?: string;
+  /** "figure" on an entry cropped from a page; absent on a text chunk. */
+  kind?: string;
+  /** Public URL of the figure PNG. Present only when `kind` is "figure". */
+  imageUrl?: string;
 }
 
 interface Citation {
@@ -24,6 +28,8 @@ interface Citation {
   url: string | null;
   source: string;
   chunkIndex: number | null;
+  /** Set when this result is a figure rather than an excerpt of prose. */
+  imageUrl: string | null;
 }
 
 /** "service-level-procedure-mp-services-v20.pdf" -> "Service Level Procedure Mp Services V20" */
@@ -50,6 +56,7 @@ function toCitation(md: ChunkMetadata): Citation {
     url: md.blobUrl ?? null,
     source: md.source ?? "unknown",
     chunkIndex: md.chunkIndex ?? null,
+    imageUrl: md.imageUrl ?? null,
   };
 }
 
@@ -68,6 +75,22 @@ function citationLabel(c: Citation): string {
 function citationLine(n: number, c: Citation, score: number): string {
   const detail = c.pages ? ` (${c.pages})` : "";
   return `[${n}] ${citationLabel(c)}${detail} \u2014 relevance ${score.toFixed(2)}`;
+}
+
+/**
+ * The image line under a figure result: `![Title (p. 4)](https://…)`.
+ *
+ * An image rather than a plain link, so a client that renders Markdown shows
+ * the figure inline instead of making the reader follow a URL to find out what
+ * it is — the picture is the payload here, unlike a text excerpt where the
+ * link is only provenance. Returns null for a text chunk, so callers can emit
+ * it unconditionally.
+ */
+function figureLine(c: Citation): string | null {
+  if (!c.imageUrl) return null;
+  const detail = c.pages ? ` (${c.pages})` : "";
+  const label = escapeLinkLabel(`${citationLabel(c)}${detail}`);
+  return `![${label}](${linkDestination(c.imageUrl)})`;
 }
 
 /** Markdown link text is delimited by brackets, so a title containing one would break it. */
@@ -106,4 +129,4 @@ function sourceList(citations: Citation[]): string {
 }
 
 export type { ChunkMetadata, Citation };
-export { toCitation, citationLine, citationLabel, sourceList };
+export { toCitation, citationLine, citationLabel, figureLine, sourceList };

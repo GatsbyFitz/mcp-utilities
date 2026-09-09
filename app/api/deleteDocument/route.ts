@@ -2,16 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
 import { del } from "@vercel/blob";
 import { sql } from "@/lib/db";
-import { vectorIndex } from "@/lib/vector";
+import { vectorIndex, escapeFilterValue } from "@/lib/vector";
 import { replaceDocumentGraph } from "../upload/steps/extractGraph";
-
-/**
- * Escapes single quotes for Upstash's SQL-like filter syntax. fileName comes
- * from the original uploaded filename, which is user-controlled.
- */
-function escapeFilterValue(value: string): string {
-  return value.replace(/'/g, "''");
-}
+import { deleteFigureBlobs } from "../upload/steps/extractFigures";
 
 export async function DELETE(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
@@ -46,6 +39,11 @@ export async function DELETE(req: NextRequest) {
     await vectorIndex.delete({ filter: `source = '${escapeFilterValue(row.name)}'` });
     
     await replaceDocumentGraph(row.name, [], []);
+
+    // Figure PNGs are not referenced by the uploads row — they are found by
+    // their `figures/<name>/` prefix — so they need deleting explicitly or
+    // they outlive the document that produced them.
+    await deleteFigureBlobs(row.name);
 
     const blobUrls = [row.blob_url, row.markdown_url].filter((u): u is string => Boolean(u));
     if (blobUrls.length > 0) {

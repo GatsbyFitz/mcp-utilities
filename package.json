@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "type-check": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "verify:multimodal": "node --env-file=.env.local scripts/verify-multimodal-embedding.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.10",
@@ -23,6 +24,7 @@
     "clsx": "^2.1.1",
     "lucide-react": "^1.23.0",
     "mcp-handler": "^2.1.0",
+    "mupdf": "^1.28.1",
     "neo4j-driver": "^6.2.0",
     "next": "^15.2.6",
     "next-auth": "^4.24.15",

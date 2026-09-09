@@ -4,7 +4,11 @@ import { start } from "workflow/api";
 import { sql } from "@/lib/db";
 import { normalizeName } from "@/lib/upload";
 import { DocumentFetchError, downloadPdfToBlob, fileNameFromUrl } from "@/lib/fetchDocument";
-import type { DocumentRequest } from "@/lib/documentRequests";
+import {
+  isMissingTable,
+  MISSING_TABLE_MESSAGE,
+  type DocumentRequest,
+} from "@/lib/documentRequests";
 import { ingestPdf } from "../upload/workflow";
 
 /**
@@ -17,15 +21,6 @@ import { ingestPdf } from "../upload/workflow";
  * request is unauthenticated, so until a signed-in operator presses approve
  * the URL is a string in a table and nothing more.
  */
-
-/** `document_requests` is provisioned by hand, like `uploads`. Say so clearly. */
-function isMissingTable(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /relation .*document_requests.* does not exist/i.test(message);
-}
-
-const MISSING_TABLE_MESSAGE =
-  "The document_requests table does not exist yet — run db/document_requests.sql against the database.";
 
 function toDocumentRequest(row: Record<string, any>): DocumentRequest {
   return {
