@@ -11,7 +11,12 @@ import {
   uploadPathname,
   type UploadedFile,
 } from "@/lib/upload";
-import { INGEST_STEPS, isTerminalRunStatus, type IngestRunProgress } from "@/lib/ingestSteps";
+import {
+  FIGURE_STEPS,
+  INGEST_STEPS,
+  isTerminalRunStatus,
+  type IngestRunProgress,
+} from "@/lib/ingestSteps";
 import type { DocumentRequest } from "@/lib/documentRequests";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -57,6 +62,13 @@ type KnowledgeBase = {
 type TrackedRun = {
   runId: string;
   fileName: string;
+  /**
+   * Which pipeline this run is, so the card can say so and can draw the right
+   * number of segments before the first poll returns. Optional because runs
+   * recovered from an older sessionStorage entry predate it; those read as
+   * ingestion, which is what they were.
+   */
+  kind?: "ingest" | "figures";
 };
 
 // Run IDs are not persisted server-side, so they survive a reload only as far
@@ -107,10 +119,13 @@ export default function UploadPage() {
 
   // Both a browser upload and an approved document request start ingestion
   // runs the same way, so both feed the same tracker.
-  const trackRuns = useCallback((started: TrackedRun[]) => {
+  const trackRuns = useCallback((started: TrackedRun[], kind: TrackedRun["kind"] = "ingest") => {
     setTrackedRuns((previous) => {
       const known = new Set(previous.map((run) => run.runId));
-      const next = [...previous, ...started.filter((run) => !known.has(run.runId))];
+      const next = [
+        ...previous,
+        ...started.filter((run) => !known.has(run.runId)).map((run) => ({ ...run, kind })),
+      ];
       try {
         sessionStorage.setItem(TRACKED_RUNS_KEY, JSON.stringify(next));
       } catch {
@@ -287,7 +302,7 @@ export default function UploadPage() {
     if (!res.ok || !data.success) {
       throw new Error(data.error ?? `Figure extraction request failed: ${res.status}`);
     }
-    return data as { queued: number; skipped: number };
+    return data as { queued: number; skipped: number; runs: TrackedRun[] };
   }
 
   async function handleExtractFiguresAll() {
@@ -301,9 +316,15 @@ export default function UploadPage() {
     setFiguresAll(true);
     setActionMessage(null);
     try {
-      const { queued, skipped } = await postExtractFigures();
+      const data = await postExtractFigures();
+      // Same progress card as an upload: these are workflow runs like any
+      // other, and watching a corpus-wide extraction with no feedback was the
+      // problem progress tracking was built to solve in the first place.
+      trackRuns(data.runs ?? [], "figures");
       setActionMessage({
-        text: `Queued ${queued} document(s) for figure extraction${skipped ? ` (${skipped} skipped, no PDF)` : ""}.`,
+        text:
+          `Queued ${data.queued} document(s) for figure extraction` +
+          `${data.skipped ? ` (${data.skipped} skipped, no PDF)` : ""}.`,
         error: false,
       });
     } catch (error) {
@@ -320,7 +341,8 @@ export default function UploadPage() {
     setFiguresId(id);
     setActionMessage(null);
     try {
-      await postExtractFigures(id);
+      const data = await postExtractFigures(id);
+      trackRuns(data.runs ?? [], "figures");
       setActionMessage({ text: `Queued "${name}" for figure extraction.`, error: false });
     } catch (error) {
       setActionMessage({
@@ -741,9 +763,9 @@ export default function UploadPage() {
           {trackedRuns.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Ingestion Progress</CardTitle>
+                <CardTitle>Pipeline Progress</CardTitle>
                 <CardDescription>
-                  Live status of each file moving through the pipeline
+                  Live status of each document moving through the pipeline
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-5">
@@ -751,6 +773,7 @@ export default function UploadPage() {
                   <IngestProgress
                     key={run.runId}
                     fileName={run.fileName}
+                    kind={run.kind ?? "ingest"}
                     progress={runProgress[run.runId]}
                     retrying={retryingRunId === run.runId}
                     onRetry={() => handleRetry(run.runId)}
@@ -1099,11 +1122,13 @@ export default function UploadPage() {
 // until the first poll lands, which is the "Queued" state.
 function IngestProgress({
   fileName,
+  kind,
   progress,
   retrying,
   onRetry,
 }: {
   fileName: string;
+  kind: "ingest" | "figures";
   progress: IngestRunProgress | undefined;
   retrying: boolean;
   onRetry: () => void;
@@ -1136,8 +1161,18 @@ function IngestProgress({
   return (
     <div className="space-y-2">
       <div className="flex items-start justify-between gap-2">
-        <span className="min-w-0 truncate text-sm font-medium" title={fileName}>
-          {fileName}
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="min-w-0 truncate text-sm font-medium" title={fileName}>
+            {fileName}
+          </span>
+          {kind === "figures" && (
+            // Several of these can run at once alongside ingestions; without a
+            // label the cards are indistinguishable and a short one looks like
+            // an ingestion that has stalled.
+            <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-muted-foreground">
+              figures
+            </span>
+          )}
         </span>
         {done ? (
           <CheckCircle2 className="size-4 shrink-0 text-green-400" />
@@ -1149,8 +1184,15 @@ function IngestProgress({
       </div>
 
       <div className="flex gap-1" aria-hidden="true">
+        {/* Until the first poll lands there is no server-side step list, so the
+            placeholder has to know which pipeline this is — otherwise a
+            three-step figure run flashes eight segments and then collapses. */}
         {(progress?.steps ??
-          INGEST_STEPS.map((step) => ({ ...step, status: "pending" as const, attempt: 1 }))
+          (kind === "figures" ? FIGURE_STEPS : INGEST_STEPS).map((step) => ({
+            ...step,
+            status: "pending" as const,
+            attempt: 1,
+          }))
         ).map((step) => (
           <div
             key={step.name}
@@ -1198,11 +1240,15 @@ function IngestProgress({
         </div>
       )}
 
-      {/* Failed with no resume point: the run died before the Markdown was
-          saved, so there is nothing cheaper to restart from. */}
+      {/* Failed with no resume point. What to do about it differs by pipeline:
+          re-running figure extraction is cheap and idempotent, whereas an
+          ingestion that died before its Markdown was saved has nothing cheaper
+          to restart from than the upload itself. */}
       {failed && !progress?.resumable && (
         <p className="text-[11px] text-muted-foreground">
-          Failed before the Markdown was saved — upload the file again to retry.
+          {kind === "figures"
+            ? "Press Figures on this document to try again — it clears any figures the failed run stored."
+            : "Failed before the Markdown was saved — upload the file again to retry."}
         </p>
       )}
     </div>

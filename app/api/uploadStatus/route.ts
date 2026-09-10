@@ -112,7 +112,11 @@ async function readRunProgress(runId: string): Promise<IngestRunProgress> {
   const expected = stepsForWorkflow(workflowName);
 
   const progress: IngestStepProgress[] = expected.map((step) => {
-    const raw = steps.get(step.name);
+    // A branching workflow reports whichever step it actually ran, so an entry
+    // may stand for more than one journal name — see FIGURE_STEPS.
+    const raw =
+      steps.get(step.name) ??
+      step.aka?.reduce<RawStep | undefined>((found, name) => found ?? steps.get(name), undefined);
     return {
       name: step.name,
       label: step.label,
