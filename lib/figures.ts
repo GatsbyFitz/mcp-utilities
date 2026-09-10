@@ -26,6 +26,16 @@ export function figureId(fileName: string, index: number): string {
 }
 
 /**
+ * Id prefix covering every figure of one document.
+ *
+ * `range` filters by id prefix — it has no metadata filter — so this is how a
+ * single document's figures are read back without scanning the whole index.
+ */
+export function figureIdPrefix(fileName: string): string {
+  return `${fileName}#figure-`;
+}
+
+/**
  * The document a figure vector belongs to, or null if the id is not a figure.
  *
  * The inverse of `figureId`. Splits on the *last* separator rather than the
@@ -92,6 +102,14 @@ export const MAX_FIGURE_DESCRIPTION = 1200;
  */
 export function figureBlobPrefix(fileName: string): string {
   return `figures/${fileName}/`;
+}
+
+/** One stored figure, as read back for display. */
+export interface DocumentFigure {
+  id: string;
+  imageUrl: string;
+  description: string;
+  page: number | null;
 }
 
 export interface ExtractedFigure {
