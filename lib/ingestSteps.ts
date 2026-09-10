@@ -31,15 +31,43 @@ export const RESUME_STEPS = [
   { name: "recordUpload", label: "Recording" },
 ] as const;
 
+// Adding figures to a document that already has chunks — the `reextractFigures`
+// workflow behind POST /api/extractFigures. Short by design: it reuses the
+// persisted Markdown and touches neither chunks nor the graph.
+//
+// The first step is whichever branch the run took. A row with a markdown_url
+// fetches it; a legacy row without one regenerates it, and that is a Gemini
+// parse rather than a blob GET, so it is much the slowest part of the run and
+// showing it as pending would misreport exactly the case that takes longest.
+// `aka` lets one reported step stand for either.
+export const FIGURE_STEPS = [
+  { name: "fetchMarkdown", label: "Loading Markdown", aka: ["createMarkdown"] },
+  { name: "extractFigures", label: "Extracting figures" },
+  { name: "embedFigures", label: "Embedding figures" },
+] as const;
+
+/** One reported step, optionally standing in for alternative journal names. */
+export interface ProgressStep {
+  name: string;
+  label: string;
+  /** Other step names that satisfy this entry, for a branching workflow. */
+  aka?: readonly string[];
+}
+
 /**
  * `markResumePoint` is deliberately absent from both lists — it writes only to
  * the journal and completes instantly, so surfacing it as a progress step
  * would be noise. Steps in the journal that no list names are ignored.
  */
-export function stepsForWorkflow(
-  workflowName: string | null
-): readonly { name: string; label: string }[] {
-  return workflowName === "resumeIngest" ? RESUME_STEPS : INGEST_STEPS;
+export function stepsForWorkflow(workflowName: string | null): readonly ProgressStep[] {
+  switch (workflowName) {
+    case "resumeIngest":
+      return RESUME_STEPS;
+    case "reextractFigures":
+      return FIGURE_STEPS;
+    default:
+      return INGEST_STEPS;
+  }
 }
 
 export const INGEST_STEP_COUNT = INGEST_STEPS.length;
