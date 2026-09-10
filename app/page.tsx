@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { Fragment, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon, PlayCircle, FileSearch } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { upload } from "@vercel/blob/client";
 import {
@@ -18,6 +18,9 @@ import {
   type IngestRunProgress,
 } from "@/lib/ingestSteps";
 import type { DocumentRequest } from "@/lib/documentRequests";
+import type { DocumentFigure } from "@/lib/figures";
+import type { IncompleteIngestion } from "@/lib/ingestionRuns";
+import type { StrandedMarkdown } from "@/lib/strandedMarkdown";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -103,9 +106,18 @@ export default function UploadPage() {
   const [reextractingId, setReextractingId] = useState<string | null>(null);
   const [figuresAll, setFiguresAll] = useState(false);
   const [figuresId, setFiguresId] = useState<string | null>(null);
+  // The document whose figures are open, by name, plus what was loaded for it.
+  const [viewingFigures, setViewingFigures] = useState<string | null>(null);
+  const [figureList, setFigureList] = useState<DocumentFigure[]>([]);
+  const [loadingFigureList, setLoadingFigureList] = useState(false);
   const [requests, setRequests] = useState<DocumentRequest[]>([]);
   const [requestsNotice, setRequestsNotice] = useState<string | null>(null);
   const [loadingRequests, setLoadingRequests] = useState(false);
+  // Rejected requests are kept but hidden: the queue is a to-do list, and a
+  // decision already made is not on it. They stay reachable because "why was
+  // this refused" is a real question, and because a rejection is the only
+  // record that the gap was ever raised.
+  const [showRejected, setShowRejected] = useState(false);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   // Per-request overrides of the URL and file name the model suggested. Keyed
   // by request id so editing one row never disturbs another.
@@ -116,6 +128,20 @@ export default function UploadPage() {
   const [notices, setNotices] = useState<string[]>([]);
   const [uploadProgress, setUploadProgress] = useState<{ fileName: string; percentage: number }[]>([]);
   const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
+  // Ingestions the database knows started and has no `uploads` row for. Cheap
+  // enough to load on mount — one indexed query against a table that only holds
+  // unfinished work.
+  const [incomplete, setIncomplete] = useState<IncompleteIngestion[]>([]);
+  const [incompleteNotice, setIncompleteNotice] = useState<string | null>(null);
+  const [loadingIncomplete, setLoadingIncomplete] = useState(false);
+  const [finishingName, setFinishingName] = useState<string | null>(null);
+  // The Blob scan is separate and deliberately manual: it lists every markdown
+  // and every uploaded PDF in the store, which is far too much work to do on
+  // every page load, and it answers a different question — what was stranded
+  // before anything was tracking it.
+  const [stranded, setStranded] = useState<StrandedMarkdown[] | null>(null);
+  const [scanningMarkdown, setScanningMarkdown] = useState(false);
+  const [restartingName, setRestartingName] = useState<string | null>(null);
 
   // Both a browser upload and an approved document request start ingestion
   // runs the same way, so both feed the same tracker.
@@ -152,6 +178,23 @@ export default function UploadPage() {
     }
   }, []);
 
+  const loadIncomplete = useCallback(async () => {
+    setLoadingIncomplete(true);
+    try {
+      const res = await fetch("/api/incompleteIngestions", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Incomplete ingestions failed: ${res.status}`);
+      }
+      setIncomplete((data.items ?? []) as IncompleteIngestion[]);
+      setIncompleteNotice((data.notice as string) ?? null);
+    } catch (error) {
+      console.error("Error fetching incomplete ingestions:", error);
+    } finally {
+      setLoadingIncomplete(false);
+    }
+  }, []);
+
   const refreshKnowledgeBase = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -174,6 +217,10 @@ export default function UploadPage() {
   useEffect(() => {
     loadRequests();
   }, [loadRequests]);
+
+  useEffect(() => {
+    loadIncomplete();
+  }, [loadIncomplete]);
 
   // Recover runs from a reload mid-ingestion. Anything the runtime has since
   // forgotten comes back as "unknown" and simply stops being polled.
@@ -217,6 +264,7 @@ export default function UploadPage() {
               // Nothing to recover from — the runs are already finished.
             }
             refreshKnowledgeBase();
+            loadIncomplete();
             return;
           }
         }
@@ -234,7 +282,7 @@ export default function UploadPage() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [trackedRuns, refreshKnowledgeBase]);
+  }, [trackedRuns, refreshKnowledgeBase, loadIncomplete]);
 
   // Retries a failed ingestion from the Markdown it already persisted. The
   // runtime cannot resume a failed run in place, so the server starts a fresh
@@ -243,10 +291,14 @@ export default function UploadPage() {
     setRetryingRunId(runId);
     setActionMessage(null);
     try {
+      // The name lets the server read the resume point from `ingestion_runs`
+      // rather than from the run's journal, which is the path that used to fail
+      // with "saved resume point is unreadable".
+      const fileName = trackedRuns.find((run) => run.runId === runId)?.fileName;
       const res = await fetch("/api/retryUpload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runId }),
+        body: JSON.stringify({ runId, fileName }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -279,6 +331,86 @@ export default function UploadPage() {
     }
   }
 
+  // Picks an unfinished ingestion back up from the Markdown it already has.
+  // The server reads the blob URLs from its own row, so this only ever names a
+  // document.
+  async function handleFinish(fileName: string) {
+    setFinishingName(fileName);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/incompleteIngestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Could not finish ingestion: ${res.status}`);
+      }
+      trackRuns([{ runId: data.runId as string, fileName }]);
+      setActionMessage({ text: `Finishing ingestion for ${fileName}.`, error: false });
+      loadIncomplete();
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Could not finish ingestion",
+        error: true,
+      });
+    } finally {
+      setFinishingName(null);
+    }
+  }
+
+  async function scanMarkdown() {
+    setScanningMarkdown(true);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/strandedMarkdown", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Scan failed: ${res.status}`);
+      }
+      setStranded((data.items ?? []) as StrandedMarkdown[]);
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Could not scan stored Markdown",
+        error: true,
+      });
+    } finally {
+      setScanningMarkdown(false);
+    }
+  }
+
+  // Restarts one of the scan's suggestions. This is also what puts the document
+  // into `ingestion_runs`, so from here on it is tracked like any other run.
+  async function handleRestart(fileName: string) {
+    setRestartingName(fileName);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/strandedMarkdown", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Could not restart ingestion: ${res.status}`);
+      }
+      trackRuns([{ runId: data.runId as string, fileName }]);
+      setStranded((previous) =>
+        (previous ?? []).filter((item) => normalizeName(item.fileName) !== normalizeName(fileName))
+      );
+      setActionMessage({ text: `Restarted ingestion for ${fileName}.`, error: false });
+      loadIncomplete();
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Could not restart ingestion",
+        error: true,
+      });
+    } finally {
+      setRestartingName(null);
+    }
+  }
+
   async function postReembed(id?: string) {
     const res = await fetch("/api/reembed", {
       method: "POST",
@@ -290,6 +422,35 @@ export default function UploadPage() {
       throw new Error(data.error ?? `Re-embed request failed: ${res.status}`);
     }
     return data as { queued: number; skipped: number };
+  }
+
+  async function toggleFigures(name: string) {
+    if (viewingFigures === name) {
+      setViewingFigures(null);
+      setFigureList([]);
+      return;
+    }
+    setViewingFigures(name);
+    setFigureList([]);
+    setLoadingFigureList(true);
+    try {
+      const res = await fetch(`/api/documentFigures?name=${encodeURIComponent(name)}`, {
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Could not load figures: ${res.status}`);
+      }
+      setFigureList((data.figures ?? []) as DocumentFigure[]);
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Could not load figures",
+        error: true,
+      });
+      setViewingFigures(null);
+    } finally {
+      setLoadingFigureList(false);
+    }
   }
 
   async function postExtractFigures(id?: string) {
@@ -306,9 +467,19 @@ export default function UploadPage() {
   }
 
   async function handleExtractFiguresAll() {
+    // Same warning as a single row, scaled up: say how much existing work is
+    // about to be replaced rather than only what the operation does.
+    const withFigures = (knowledgeBase?.items ?? []).filter((item) => (item.figures ?? 0) > 0);
+    const existingTotal = withFigures.reduce((sum, item) => sum + (item.figures ?? 0), 0);
+    const replacing = withFigures.length
+      ? ` This deletes ${existingTotal} existing figure${existingTotal === 1 ? "" : "s"} ` +
+        `across ${withFigures.length} document${withFigures.length === 1 ? "" : "s"} and re-runs detection for them.`
+      : "";
+
     if (
       !window.confirm(
-        "Extract figures for every document? This renders each page carrying a figure and embeds the crops \u2014 chunks, embeddings and the graph are left alone."
+        "Extract figures for every document? This renders each page carrying a figure " +
+          `and embeds the crops \u2014 chunks, embeddings and the graph are left alone.${replacing}`
       )
     ) {
       return;
@@ -337,7 +508,23 @@ export default function UploadPage() {
     }
   }
 
-  async function handleExtractFiguresRow(id: string, name: string) {
+  async function handleExtractFiguresRow(id: string, name: string, existing: number | null) {
+    // Re-extraction is destructive before it is additive: embedFigures clears
+    // this document's figure vectors and extractFigures deletes its stored
+    // PNGs, both before anything new is written. Silently discarding work
+    // someone may be looking at — and paying for a vision call per page to
+    // redo it — is worth a question.
+    if (
+      existing !== null &&
+      existing > 0 &&
+      !window.confirm(
+        `"${name}" already has ${existing} figure${existing === 1 ? "" : "s"}. ` +
+          `Extracting again deletes them and their images, then re-runs detection ` +
+          `on every page carrying a figure. Continue?`
+      )
+    ) {
+      return;
+    }
     setFiguresId(id);
     setActionMessage(null);
     try {
@@ -408,6 +595,11 @@ export default function UploadPage() {
       setReextractingId(null);
     }
   }
+
+  const rejectedRequests = requests.filter((request) => request.status === "rejected");
+  const visibleRequests = showRejected
+    ? requests
+    : requests.filter((request) => request.status !== "rejected");
 
   async function handleResolveRequest(request: DocumentRequest, action: "approve" | "reject") {
     if (
@@ -783,7 +975,7 @@ export default function UploadPage() {
             </Card>
           )}
 
-          {(requests.length > 0 || requestsNotice) && (
+          {(visibleRequests.length > 0 || rejectedRequests.length > 0 || requestsNotice) && (
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -794,7 +986,25 @@ export default function UploadPage() {
                   Gaps the model found via <code>request_document</code>. Nothing is
                   fetched until you approve it.
                 </CardDescription>
-                <CardAction>
+                <CardAction className="flex items-center gap-2">
+                  {rejectedRequests.length > 0 && (
+                    // Only offered when there is something behind it — a toggle
+                    // that reveals nothing is just a control to wonder about.
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => setShowRejected((shown) => !shown)}
+                      title={
+                        showRejected
+                          ? "Hide requests that were rejected"
+                          : "Show requests that were rejected"
+                      }
+                    >
+                      {showRejected
+                        ? "Hide rejected"
+                        : `Show ${rejectedRequests.length} rejected`}
+                    </Button>
+                  )}
                   <Button
                     variant="outline"
                     size="sm"
@@ -809,7 +1019,20 @@ export default function UploadPage() {
                 {requestsNotice && (
                   <p className="text-sm text-muted-foreground">{requestsNotice}</p>
                 )}
-                {requests.map((request) => {
+                {!requestsNotice && visibleRequests.length === 0 && (
+                  // Distinguishes "nothing outstanding" from "nothing at all",
+                  // so an empty card does not read as a queue that lost its
+                  // contents.
+                  <p className="text-sm text-muted-foreground">
+                    Nothing awaiting review
+                    {rejectedRequests.length > 0 &&
+                      ` — ${rejectedRequests.length} rejected request${
+                        rejectedRequests.length === 1 ? "" : "s"
+                      } hidden`}
+                    .
+                  </p>
+                )}
+                {visibleRequests.map((request) => {
                   const pending = request.status === "pending";
                   const busy = resolvingId === request.id;
                   return (
@@ -918,6 +1141,139 @@ export default function UploadPage() {
               </CardContent>
             </Card>
           )}
+
+          {(incomplete.length > 0 || incompleteNotice) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <PlayCircle className="size-4" />
+                  Unfinished ingestions
+                </CardTitle>
+                <CardDescription>
+                  Documents whose ingestion started and never reached the knowledge
+                  base. Tracked in the database, so closing this tab does not lose them.
+                </CardDescription>
+                <CardAction>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={loadIncomplete}
+                    disabled={loadingIncomplete}
+                  >
+                    <RefreshCw className={loadingIncomplete ? "animate-spin" : ""} />
+                  </Button>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                {incompleteNotice && (
+                  <p className="text-sm text-muted-foreground">{incompleteNotice}</p>
+                )}
+                {incomplete.map((item) => (
+                  <div
+                    key={item.fileName}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{item.fileName}</p>
+                      <p className="text-xs text-muted-foreground">
+                        Started {formatDate(item.startedAt)} · {formatBytes(item.sizeBytes)}
+                        {item.markdownUrl
+                          ? " · Markdown saved"
+                          : " · no Markdown yet"}
+                      </p>
+                    </div>
+                    {item.markdownUrl ? (
+                      <Button
+                        size="sm"
+                        onClick={() => handleFinish(item.fileName)}
+                        disabled={finishingName === item.fileName}
+                        title="Resume from the saved Markdown — the PDF is not parsed again"
+                      >
+                        {finishingName === item.fileName ? (
+                          <Loader2 className="animate-spin" />
+                        ) : (
+                          <PlayCircle />
+                        )}
+                        Finish ingestion
+                      </Button>
+                    ) : (
+                      // Nothing cheaper than the original PDF to restart from,
+                      // so offering a resume here would only ever fail.
+                      <span className="text-xs text-muted-foreground">
+                        Stopped before the parse — upload it again
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileSearch className="size-4" />
+                Stored Markdown
+              </CardTitle>
+              <CardDescription>
+                Scans Blob for parsed Markdown with no document behind it — the
+                expensive half of an ingestion, already paid for. Finds runs from
+                before anything tracked them, which the list above cannot.
+              </CardDescription>
+              <CardAction>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={scanMarkdown}
+                  disabled={scanningMarkdown}
+                >
+                  {scanningMarkdown ? <Loader2 className="animate-spin" /> : <FileSearch />}
+                  {stranded === null ? "Scan" : "Rescan"}
+                </Button>
+              </CardAction>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              {stranded === null && (
+                <p className="text-sm text-muted-foreground">
+                  Not scanned yet.
+                </p>
+              )}
+              {stranded !== null && stranded.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  Every stored Markdown belongs to a document in the knowledge base.
+                </p>
+              )}
+              {(stranded ?? []).map((item) => (
+                <div
+                  key={item.fileName}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{item.fileName}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Parsed {formatDate(item.markdownAt)} · {formatBytes(item.markdownBytes)} of
+                      Markdown · PDF {formatBytes(item.sizeBytes)}
+                      {item.tracked && " · already listed above"}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant={item.tracked ? "outline" : "default"}
+                    onClick={() => handleRestart(item.fileName)}
+                    disabled={restartingName === item.fileName}
+                    title="Ingest from this saved Markdown — the PDF is not parsed again"
+                  >
+                    {restartingName === item.fileName ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <PlayCircle />
+                    )}
+                    Restart ingestion
+                  </Button>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
         </div>
 
         <Card className="w-full min-w-0 lg:flex-1">
@@ -992,7 +1348,8 @@ export default function UploadPage() {
                 </TableHeader>
                 <TableBody>
                   {knowledgeBase.items.map((item) => (
-                    <TableRow key={item.id}>
+                    <Fragment key={item.id}>
+                    <TableRow>
                       <TableCell className="font-medium">
                         {item.blobUrl ? (
                           <a
@@ -1017,7 +1374,21 @@ export default function UploadPage() {
                         ) : item.figures === 0 ? (
                           <span className="text-muted-foreground">0</span>
                         ) : (
-                          item.figures
+                          // The count is the affordance — there is nothing to
+                          // open when it is zero, so only a non-zero one is a
+                          // control.
+                          <button
+                            type="button"
+                            onClick={() => toggleFigures(item.name)}
+                            className="underline underline-offset-2 hover:text-foreground"
+                            title={
+                              viewingFigures === item.name
+                                ? "Hide figures"
+                                : `View ${item.figures} figure${item.figures === 1 ? "" : "s"}`
+                            }
+                          >
+                            {item.figures}
+                          </button>
                         )}
                       </TableCell>
                       <TableCell className="text-right whitespace-nowrap">
@@ -1070,7 +1441,7 @@ export default function UploadPage() {
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => handleExtractFiguresRow(item.id, item.name)}
+                            onClick={() => handleExtractFiguresRow(item.id, item.name, item.figures)}
                             disabled={
                               figuresId === item.id ||
                               figuresAll ||
@@ -1103,6 +1474,64 @@ export default function UploadPage() {
                         </div>
                       </TableCell>
                     </TableRow>
+
+                    {/* Expanded in place rather than in a dialog: there is no
+                        dialog primitive in components/ui, and a figure is most
+                        useful read next to the document it came from. */}
+                    {viewingFigures === item.name && (
+                      <TableRow>
+                        <TableCell colSpan={6} className="bg-muted/30">
+                          {loadingFigureList ? (
+                            <p className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+                              <Loader2 className="size-3 animate-spin" />
+                              Loading figures…
+                            </p>
+                          ) : figureList.length === 0 ? (
+                            <p className="py-2 text-xs text-muted-foreground">
+                              No figures could be read for this document.
+                            </p>
+                          ) : (
+                            <div className="grid gap-4 py-2 sm:grid-cols-2 lg:grid-cols-3">
+                              {figureList.map((figure) => (
+                                <figure key={figure.id} className="space-y-1">
+                                  {/* Links to the full-resolution PNG, which is
+                                      rendered far larger than it displays here. */}
+                                  <a
+                                    href={figure.imageUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    title="Open the full-resolution image"
+                                  >
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                      src={figure.imageUrl}
+                                      alt={figure.description || "Extracted figure"}
+                                      loading="lazy"
+                                      className="w-full rounded border border-border bg-white object-contain"
+                                    />
+                                  </a>
+                                  <figcaption className="space-y-0.5">
+                                    {figure.page !== null && (
+                                      <p className="text-[11px] text-muted-foreground">
+                                        p. {figure.page}
+                                      </p>
+                                    )}
+                                    {/* The description is not a caption: it is
+                                        the text that was embedded with the
+                                        image, so it is what made this figure
+                                        findable. */}
+                                    <p className="text-[11px] leading-snug text-muted-foreground">
+                                      {figure.description}
+                                    </p>
+                                  </figcaption>
+                                </figure>
+                              ))}
+                            </div>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    </Fragment>
                   ))}
                 </TableBody>
               </Table>

@@ -4,6 +4,13 @@ import { del } from "@vercel/blob";
 import { start } from "workflow/api";
 import { sql } from "@/lib/db";
 import { normalizeName, type UploadedFile } from "@/lib/upload";
+import {
+  attachRun,
+  beginIngestionRun,
+  isConcurrentIngestion,
+  isMissingIngestionRunsTable,
+  MISSING_INGESTION_RUNS_MESSAGE,
+} from "@/lib/ingestionRuns";
 import { ingestPdf } from "./workflow";
 
 /**
@@ -77,6 +84,46 @@ export async function POST(req: NextRequest) {
     accepted.push(file);
   }
 
+  // Claim each accepted document before starting anything. The claim is the
+  // durable handle on the run: `uploads` gets its row from the last step, so
+  // without this nothing outside the browser tab knows the ingestion exists.
+  //
+  // The primary key on the claim also closes a gap the `uploads` lookup above
+  // cannot see — two uploads of the same name in flight at once, neither of
+  // them in `uploads` yet — which would otherwise leave the two runs
+  // overwriting each other's chunks and graph edges.
+  const inFlight: UploadedFile[] = [];
+  const claimed: UploadedFile[] = [];
+
+  for (const file of accepted) {
+    try {
+      await beginIngestionRun({
+        fileName: file.fileName,
+        sizeBytes: file.sizeBytes,
+        blob: { url: file.url, downloadUrl: file.downloadUrl, pathname: file.pathname },
+      });
+      claimed.push(file);
+    } catch (error) {
+      if (isConcurrentIngestion(error)) {
+        inFlight.push(file);
+        continue;
+      }
+      if (isMissingIngestionRunsTable(error)) {
+        // Ingestion worked without this table before it existed and still does;
+        // it just cannot be recovered after a refresh. Say so once, loudly, in
+        // the server log rather than refusing the upload.
+        console.warn(`[upload] ${MISSING_INGESTION_RUNS_MESSAGE}`);
+        claimed.push(file);
+        continue;
+      }
+      console.error(`[upload] could not claim ${file.fileName}:`, error);
+      return NextResponse.json(
+        { success: false, error: "Could not record the ingestion; nothing was started" },
+        { status: 500 }
+      );
+    }
+  }
+
   // A skipped file was uploaded but will never be ingested, so its blob is
   // orphaned. Safe to remove: each upload gets its own uuid-prefixed pathname,
   // so this never touches the existing document's blob.
@@ -86,9 +133,10 @@ export async function POST(req: NextRequest) {
   // the response. The trade is that the function may be frozen before the
   // delete lands, leaving the blob in place; `waitUntil` from
   // @vercel/functions would close that gap if it ever proves to matter.
-  if (skipped.length > 0) {
+  const orphaned = [...skipped, ...inFlight];
+  if (orphaned.length > 0) {
     void Promise.all(
-      skipped.map((file) =>
+      orphaned.map((file) =>
         del(file.url).catch((error) =>
           console.warn(`[upload] could not delete orphaned blob ${file.pathname}:`, error)
         )
@@ -96,11 +144,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // The run ID is the only handle on an in-flight ingestion — nothing is
-  // written to Postgres until `recordUpload`, the last step. Hand it back so
-  // the client can poll GET /api/uploadStatus for per-step progress.
+  // Hand the run ID back so the client can poll GET /api/uploadStatus for
+  // per-step progress. It is no longer the *only* handle on an in-flight
+  // ingestion — the claim row above survives a refresh, and
+  // GET /api/incompleteIngestions is how a run is found again without it.
   const runs = await Promise.all(
-    accepted.map(async (file) => {
+    claimed.map(async (file) => {
       const run = await start(ingestPdf, [
         {
           fileName: file.fileName,
@@ -112,14 +161,21 @@ export async function POST(req: NextRequest) {
           },
         },
       ]);
+      // Best-effort: the claim row is what matters, and it is already written.
+      // The run id only saves a lookup when resuming, so failing the upload
+      // over it would trade a real ingestion for a convenience.
+      await attachRun(file.fileName, run.runId).catch((error) =>
+        console.warn(`[upload] could not attach run to ${file.fileName}:`, error)
+      );
       return { fileName: file.fileName, runId: run.runId };
     })
   );
 
   return NextResponse.json({
     success: true,
-    fileCount: accepted.length,
+    fileCount: claimed.length,
     runs,
     skipped: skipped.map((file) => file.fileName),
+    inFlight: inFlight.map((file) => file.fileName),
   });
 }

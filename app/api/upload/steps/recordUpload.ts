@@ -1,4 +1,5 @@
 import { sql } from "@/lib/db";
+import { clearIngestionRun } from "@/lib/ingestionRuns";
 import { v4 as uuidv4 } from "uuid";
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,17 @@ export async function recordUpload(
       NOW(), ${blob.url}, ${blob.downloadUrl}, ${blob.pathname}, ${markdownUrl}
     )
   `;
+
+  // The document has landed, so it is no longer an ingestion needing
+  // finalisation. Best-effort on purpose: this runs after the insert above, and
+  // throwing now would retry the whole step and write a second `uploads` row.
+  // A row left behind is not load-bearing — `listIncompleteIngestions` excludes
+  // anything present in `uploads` for exactly this case.
+  try {
+    await clearIngestionRun(fileName);
+  } catch (error) {
+    console.warn(`[recordUpload] could not clear ingestion_runs for ${fileName}:`, error);
+  }
 }
 
 // Re-embedding reuses the existing uploads row (same blob, same file) rather

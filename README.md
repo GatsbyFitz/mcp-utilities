@@ -108,7 +108,7 @@ The tool asks the model to do two things before it will record anything. It must
 
 Neither is taken on trust. The server re-checks the corpus itself, comparing *tokens* rather than substrings — a request carries a prose title ("B2B Procedure: Technical Delivery Specification") while the corpus stores a file name ("B2B-Procedure-Technical-Delivery-Spec-v3.2.pdf"), and no substring of one appears in the other, which is why the original `LIKE` check never fired. A likely match is returned to the model with its overlap score instead of a request being queued.
 
-`GET/POST /api/documentRequests` is the review queue, rendered on the upload page. Approving is the only thing that fetches, and it re-derives everything rather than trusting the request: the operator can replace the URL and the file name, the name is checked against `uploads` the same way a browser upload is, and the download goes through [lib/fetchDocument.ts](lib/fetchDocument.ts), which
+`GET/POST /api/documentRequests` is the review queue, rendered on the upload page. Rejected requests are hidden by default — the queue is a to-do list and a decision already made is not on it — behind a toggle that appears only when there are any, since a rejection is the only record that a gap was ever raised. Approving is the only thing that fetches, and it re-derives everything rather than trusting the request: the operator can replace the URL and the file name, the name is checked against `uploads` the same way a browser upload is, and the download goes through [lib/fetchDocument.ts](lib/fetchDocument.ts), which
 
 - requires `https:`,
 - resolves the host and refuses any answer in a loopback, private, CGNAT, link-local (including the cloud metadata address), multicast or unique-local range — checking IPv4-mapped IPv6 in both the dotted and the hex form the resolver actually returns,
@@ -119,6 +119,22 @@ Neither is taken on trust. The server re-checks the corpus itself, comparing *to
 On success it starts `ingestPdf` with the same `BlobInfo` shape a browser upload produces and hands the run ID back, so the request lands in the same per-step progress card as any other upload. A failed fetch flips the row to `failed` with the reason attached.
 
 `document_requests` is not created by application code — run [db/document_requests.sql](db/document_requests.sql) once against the database, as with `uploads`. Until then the queue endpoint returns empty with a notice saying so rather than an error.
+
+### Recovering an ingestion that never finished
+
+The PDF→Markdown parse is the most expensive thing the pipeline does, and it is banked in Blob long before the steps that actually tend to fail. Nothing durable used to point at it: `uploads` gets its row from `recordUpload`, the *last* step, and until then the only handle on a run was its run ID, which lived in `sessionStorage` in the tab that started the upload. Refresh that tab and the Markdown was stranded — paid for, sitting in Blob, unreachable.
+
+Two features cover this, and they answer different questions.
+
+**`ingestion_runs` is the record going forward.** A row is written by `POST /api/upload` before the workflow starts, `markResumePoint` fills in `markdown_url` the moment the parse lands, and `recordUpload` deletes the row once the document is real. So the table's contents *are* the ingestions needing finalisation, and `GET /api/incompleteIngestions` is just a read of it. `POST` with a file name finishes one from its saved Markdown. Rows are keyed by normalised file name rather than run ID, because a retry starts a *new* run for the same document — and because the primary key then also closes a gap the `uploads` duplicate check cannot see: two uploads of one name in flight at once, neither of them in `uploads` yet, quietly overwriting each other's chunks and graph edges.
+
+It also fixes retrying. `POST /api/retryUpload` reads the resume point from this row first and from the workflow journal only as a fallback. The journal path is the one that produced *"saved resume point is unreadable"*: `hydrateStepIO` swallows a hydration failure and leaves the step's output as raw bytes, so the run's Markdown was reachable in principle and unreadable in practice.
+
+**`GET /api/strandedMarkdown` is the retrospective scan**, and the reason the table alone is not enough: a row only exists for runs started since the table did. Blob knows about all of them, because both halves of a run leave a named artifact — `markdown/<uuid>-<file name>.md` and `uploads/<uuid>-<file name>` — so pairing those by file name and subtracting what is already in `uploads` reconstructs the list retroactively, with no migration and nothing to keep in sync. Where one name has several parses, the newest wins. A result is listed only when the original PDF is still in Blob too, since finishing needs it for figure extraction and for the blob URL that ends up in citations.
+
+The scan is manual, behind a button on the upload page, because it lists every Markdown and every PDF in the store — far too much work for a page load — and because it is a recovery tool, not a live view. Restarting one of its suggestions writes the `ingestion_runs` row the original run never had, so tracking hands over to the first feature from there.
+
+Both restart paths take a file name and nothing else. The server re-derives the blob URLs itself, so a caller can name a document but never point the pipeline at a blob of its choosing.
 
 ### Figures
 
@@ -133,6 +149,8 @@ Each figure is rendered **twice, at two resolutions, for two different consumers
 **The API limits shape the batching.** A request may carry at most 6 images, and the *overall* input budget is 8,192 tokens shared across every image and description in it. `embedMany` puts all values in one HTTP request regardless of image count, so `embedFigures` batches at `MAX_FIGURES_PER_EMBED_REQUEST` (4, leaving headroom under both). That constant is derived from the API, not a throughput knob — raising it to save round trips brings back a hard rejection on any document with more than six figures. `values` and `content` are positionally paired and sliced together, since misaligning them would attach every vector to the wrong figure's metadata with no error.
 
 **Figures are additive, which is the point.** They use their own vector-ID namespace (`${fileName}#figure-${n}`, distinct from `chunkId`'s `${fileName}-${i}`), so no text chunk ID moves and every `chunkId` stored on a Neo4j relationship keeps resolving. Existing documents therefore gain figures through `POST /api/extractFigures` — **Extract figures** on the knowledge-base page, per row or for the whole corpus — with no re-ingest. It is also the cheap way to iterate on the figure prompt: re-running costs the page renders and one vision call per figure-bearing page, not a re-embed.
+
+A non-zero **Figures** count in the knowledge base table opens that document's figures in place — `GET /api/documentFigures?name=…` reads them from the vector index by id prefix rather than by listing the Blob folder, because the index also holds the description that was embedded with each image and the page it came from. Each thumbnail links to the full-resolution PNG, which is rendered far larger than it displays. Extracting figures for a document that already has some warns first: `embedFigures` clears its figure vectors and `extractFigures` deletes its stored PNGs before anything new is written, so a re-run replaces existing work and pays a vision call per figure-bearing page to do it.
 
 The knowledge base table shows a **Figures** count per document. It is counted from the vector index rather than stored on the `uploads` row alongside `chunks`: Upstash has no count-by-filter (`range` takes a prefix and cursor but no metadata filter, and `info()` reports only totals), but figure ids are `${fileName}#figure-${n}`, so one id-only scan of the index yields counts for every document at once — one request per 1,000 vectors. The stronger reason is that a stored count is a claim about the index that nothing keeps true: a partly-failed `embedFigures`, a re-extraction finding fewer figures, or a manual delete would all leave it quietly wrong. A dash rather than `0` means the count could not be read, which is not the same as having no figures.
 
@@ -213,12 +231,15 @@ Required in `.env.local` (gitignored): `UPSTASH_VECTOR_REST_URL`/`_TOKEN`, `NEO4
 
 ## Provisioning done by hand
 
-Nothing in this repo creates schema. Three things must already exist in the provisioned services, and each fails differently if it does not:
+Nothing in this repo creates schema. Four things must already exist in the provisioned services, and each fails differently if it does not:
 
 | What | Created by | Symptom if missing |
 | --- | --- | --- |
 | Neon `uploads` table | manually | ingestion fails at `recordUpload`, the last step, after all the model spend |
 | Neo4j `entity_names` vector index | manually | `search_graph` returns nothing, with no error |
 | Neon `document_requests` table | **[db/document_requests.sql](db/document_requests.sql)** | the review queue reads empty with a notice; `request_document` refuses and says which file to run |
+| Neon `ingestion_runs` table | **[db/ingestion_runs.sql](db/ingestion_runs.sql)** | ingestion still works, but an interrupted one cannot be found again — the unfinished list reads empty with a notice, and recovery falls back to the Blob scan |
 
-The last one is the easy one to miss, because the failure surfaces at the far end of the system — inside an MCP tool call from a model, rather than anywhere near the database. Run it once and the queue works.
+`document_requests` is the easy one to miss, because the failure surfaces at the far end of the system — inside an MCP tool call from a model, rather than anywhere near the database. Run it once and the queue works.
+
+`ingestion_runs` fails quietly by design. Everything that touches it degrades rather than aborts: the upload route logs and starts the run anyway, `markResumePoint` treats a missing table as the one error not worth retrying, and both read paths return empty with the file to run. Losing the ability to recover an ingestion is bad; refusing to ingest at all because the recovery table is absent would be worse.
