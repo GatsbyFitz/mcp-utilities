@@ -2,7 +2,7 @@
 
 import { Fragment, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon, PlayCircle } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { upload } from "@vercel/blob/client";
 import {
@@ -19,6 +19,7 @@ import {
 } from "@/lib/ingestSteps";
 import type { DocumentRequest } from "@/lib/documentRequests";
 import type { DocumentFigure } from "@/lib/figures";
+import type { IncompleteIngestion } from "@/lib/ingestionRuns";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -126,6 +127,14 @@ export default function UploadPage() {
   const [notices, setNotices] = useState<string[]>([]);
   const [uploadProgress, setUploadProgress] = useState<{ fileName: string; percentage: number }[]>([]);
   const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
+  // Ingestions the database knows started and has no `uploads` row for. Cheap
+  // enough to load on mount — one indexed query against a table that only holds
+  // unfinished work.
+  const [incomplete, setIncomplete] = useState<IncompleteIngestion[]>([]);
+  const [incompleteNotice, setIncompleteNotice] = useState<string | null>(null);
+  const [loadingIncomplete, setLoadingIncomplete] = useState(false);
+  const [finishingName, setFinishingName] = useState<string | null>(null);
+
 
   // Both a browser upload and an approved document request start ingestion
   // runs the same way, so both feed the same tracker.
@@ -162,6 +171,23 @@ export default function UploadPage() {
     }
   }, []);
 
+  const loadIncomplete = useCallback(async () => {
+    setLoadingIncomplete(true);
+    try {
+      const res = await fetch("/api/incompleteIngestions", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Incomplete ingestions failed: ${res.status}`);
+      }
+      setIncomplete((data.items ?? []) as IncompleteIngestion[]);
+      setIncompleteNotice((data.notice as string) ?? null);
+    } catch (error) {
+      console.error("Error fetching incomplete ingestions:", error);
+    } finally {
+      setLoadingIncomplete(false);
+    }
+  }, []);
+
   const refreshKnowledgeBase = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -184,6 +210,10 @@ export default function UploadPage() {
   useEffect(() => {
     loadRequests();
   }, [loadRequests]);
+
+  useEffect(() => {
+    loadIncomplete();
+  }, [loadIncomplete]);
 
   // Recover runs from a reload mid-ingestion. Anything the runtime has since
   // forgotten comes back as "unknown" and simply stops being polled.
@@ -227,6 +257,7 @@ export default function UploadPage() {
               // Nothing to recover from — the runs are already finished.
             }
             refreshKnowledgeBase();
+            loadIncomplete();
             return;
           }
         }
@@ -244,7 +275,7 @@ export default function UploadPage() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [trackedRuns, refreshKnowledgeBase]);
+  }, [trackedRuns, refreshKnowledgeBase, loadIncomplete]);
 
   // Retries a failed ingestion from the Markdown it already persisted. The
   // runtime cannot resume a failed run in place, so the server starts a fresh
@@ -253,10 +284,14 @@ export default function UploadPage() {
     setRetryingRunId(runId);
     setActionMessage(null);
     try {
+      // The name lets the server read the resume point from `ingestion_runs`
+      // rather than from the run's journal, which is the path that used to fail
+      // with "saved resume point is unreadable".
+      const fileName = trackedRuns.find((run) => run.runId === runId)?.fileName;
       const res = await fetch("/api/retryUpload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runId }),
+        body: JSON.stringify({ runId, fileName }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -286,6 +321,35 @@ export default function UploadPage() {
       });
     } finally {
       setRetryingRunId(null);
+    }
+  }
+
+  // Picks an unfinished ingestion back up from the Markdown it already has.
+  // The server reads the blob URLs from its own row, so this only ever names a
+  // document.
+  async function handleFinish(fileName: string) {
+    setFinishingName(fileName);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/incompleteIngestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Could not finish ingestion: ${res.status}`);
+      }
+      trackRuns([{ runId: data.runId as string, fileName }]);
+      setActionMessage({ text: `Finishing ingestion for ${fileName}.`, error: false });
+      loadIncomplete();
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Could not finish ingestion",
+        error: true,
+      });
+    } finally {
+      setFinishingName(null);
     }
   }
 
@@ -1019,6 +1083,74 @@ export default function UploadPage() {
               </CardContent>
             </Card>
           )}
+
+          {(incomplete.length > 0 || incompleteNotice) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <PlayCircle className="size-4" />
+                  Unfinished ingestions
+                </CardTitle>
+                <CardDescription>
+                  Documents whose ingestion started and never reached the knowledge
+                  base. Tracked in the database, so closing this tab does not lose them.
+                </CardDescription>
+                <CardAction>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={loadIncomplete}
+                    disabled={loadingIncomplete}
+                  >
+                    <RefreshCw className={loadingIncomplete ? "animate-spin" : ""} />
+                  </Button>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                {incompleteNotice && (
+                  <p className="text-sm text-muted-foreground">{incompleteNotice}</p>
+                )}
+                {incomplete.map((item) => (
+                  <div
+                    key={item.fileName}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{item.fileName}</p>
+                      <p className="text-xs text-muted-foreground">
+                        Started {formatDate(item.startedAt)} · {formatBytes(item.sizeBytes)}
+                        {item.markdownUrl
+                          ? " · Markdown saved"
+                          : " · no Markdown yet"}
+                      </p>
+                    </div>
+                    {item.markdownUrl ? (
+                      <Button
+                        size="sm"
+                        onClick={() => handleFinish(item.fileName)}
+                        disabled={finishingName === item.fileName}
+                        title="Resume from the saved Markdown — the PDF is not parsed again"
+                      >
+                        {finishingName === item.fileName ? (
+                          <Loader2 className="animate-spin" />
+                        ) : (
+                          <PlayCircle />
+                        )}
+                        Finish ingestion
+                      </Button>
+                    ) : (
+                      // Nothing cheaper than the original PDF to restart from,
+                      // so offering a resume here would only ever fail.
+                      <span className="text-xs text-muted-foreground">
+                        Stopped before the parse — upload it again
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
         </div>
 
         <Card className="w-full min-w-0 lg:flex-1">
