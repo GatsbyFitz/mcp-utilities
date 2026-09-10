@@ -124,11 +124,17 @@ On success it starts `ingestPdf` with the same `BlobInfo` shape a browser upload
 
 The PDF→Markdown parse is the most expensive thing the pipeline does, and it is banked in Blob long before the steps that actually tend to fail. Nothing durable used to point at it: `uploads` gets its row from `recordUpload`, the *last* step, and until then the only handle on a run was its run ID, which lived in `sessionStorage` in the tab that started the upload. Refresh that tab and the Markdown was stranded — paid for, sitting in Blob, unreachable.
 
+Two features cover this, and they answer different questions.
+
 **`ingestion_runs` is the record going forward.** A row is written by `POST /api/upload` before the workflow starts, `markResumePoint` fills in `markdown_url` the moment the parse lands, and `recordUpload` deletes the row once the document is real. So the table's contents *are* the ingestions needing finalisation, and `GET /api/incompleteIngestions` is just a read of it. `POST` with a file name finishes one from its saved Markdown. Rows are keyed by normalised file name rather than run ID, because a retry starts a *new* run for the same document — and because the primary key then also closes a gap the `uploads` duplicate check cannot see: two uploads of one name in flight at once, neither of them in `uploads` yet, quietly overwriting each other's chunks and graph edges.
 
 It also fixes retrying. `POST /api/retryUpload` reads the resume point from this row first and from the workflow journal only as a fallback. The journal path is the one that produced *"saved resume point is unreadable"*: `hydrateStepIO` swallows a hydration failure and leaves the step's output as raw bytes, so the run's Markdown was reachable in principle and unreadable in practice.
 
-`POST /api/incompleteIngestions` takes a file name and nothing else. The server re-derives the blob URLs from its own row, so a caller can name a document but never point the pipeline at a blob of its choosing.
+**`GET /api/strandedMarkdown` is the retrospective scan**, and the reason the table alone is not enough: a row only exists for runs started since the table did. Blob knows about all of them, because both halves of a run leave a named artifact — `markdown/<uuid>-<file name>.md` and `uploads/<uuid>-<file name>` — so pairing those by file name and subtracting what is already in `uploads` reconstructs the list retroactively, with no migration and nothing to keep in sync. Where one name has several parses, the newest wins. A result is listed only when the original PDF is still in Blob too, since finishing needs it for figure extraction and for the blob URL that ends up in citations.
+
+The scan is manual, behind a button on the upload page, because it lists every Markdown and every PDF in the store — far too much work for a page load — and because it is a recovery tool, not a live view. Restarting one of its suggestions writes the `ingestion_runs` row the original run never had, so tracking hands over to the first feature from there.
+
+Both restart paths take a file name and nothing else. The server re-derives the blob URLs itself, so a caller can name a document but never point the pipeline at a blob of its choosing.
 
 ### Figures
 
@@ -232,7 +238,7 @@ Nothing in this repo creates schema. Four things must already exist in the provi
 | Neon `uploads` table | manually | ingestion fails at `recordUpload`, the last step, after all the model spend |
 | Neo4j `entity_names` vector index | manually | `search_graph` returns nothing, with no error |
 | Neon `document_requests` table | **[db/document_requests.sql](db/document_requests.sql)** | the review queue reads empty with a notice; `request_document` refuses and says which file to run |
-| Neon `ingestion_runs` table | **[db/ingestion_runs.sql](db/ingestion_runs.sql)** | ingestion still works, but an interrupted one cannot be found again — the unfinished list reads empty with a notice |
+| Neon `ingestion_runs` table | **[db/ingestion_runs.sql](db/ingestion_runs.sql)** | ingestion still works, but an interrupted one cannot be found again — the unfinished list reads empty with a notice, and recovery falls back to the Blob scan |
 
 `document_requests` is the easy one to miss, because the failure surfaces at the far end of the system — inside an MCP tool call from a model, rather than anywhere near the database. Run it once and the queue works.
 

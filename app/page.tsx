@@ -2,7 +2,7 @@
 
 import { Fragment, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon, PlayCircle } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon, PlayCircle, FileSearch } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { upload } from "@vercel/blob/client";
 import {
@@ -20,6 +20,7 @@ import {
 import type { DocumentRequest } from "@/lib/documentRequests";
 import type { DocumentFigure } from "@/lib/figures";
 import type { IncompleteIngestion } from "@/lib/ingestionRuns";
+import type { StrandedMarkdown } from "@/lib/strandedMarkdown";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -134,7 +135,13 @@ export default function UploadPage() {
   const [incompleteNotice, setIncompleteNotice] = useState<string | null>(null);
   const [loadingIncomplete, setLoadingIncomplete] = useState(false);
   const [finishingName, setFinishingName] = useState<string | null>(null);
-
+  // The Blob scan is separate and deliberately manual: it lists every markdown
+  // and every uploaded PDF in the store, which is far too much work to do on
+  // every page load, and it answers a different question — what was stranded
+  // before anything was tracking it.
+  const [stranded, setStranded] = useState<StrandedMarkdown[] | null>(null);
+  const [scanningMarkdown, setScanningMarkdown] = useState(false);
+  const [restartingName, setRestartingName] = useState<string | null>(null);
 
   // Both a browser upload and an approved document request start ingestion
   // runs the same way, so both feed the same tracker.
@@ -350,6 +357,57 @@ export default function UploadPage() {
       });
     } finally {
       setFinishingName(null);
+    }
+  }
+
+  async function scanMarkdown() {
+    setScanningMarkdown(true);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/strandedMarkdown", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Scan failed: ${res.status}`);
+      }
+      setStranded((data.items ?? []) as StrandedMarkdown[]);
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Could not scan stored Markdown",
+        error: true,
+      });
+    } finally {
+      setScanningMarkdown(false);
+    }
+  }
+
+  // Restarts one of the scan's suggestions. This is also what puts the document
+  // into `ingestion_runs`, so from here on it is tracked like any other run.
+  async function handleRestart(fileName: string) {
+    setRestartingName(fileName);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/strandedMarkdown", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Could not restart ingestion: ${res.status}`);
+      }
+      trackRuns([{ runId: data.runId as string, fileName }]);
+      setStranded((previous) =>
+        (previous ?? []).filter((item) => normalizeName(item.fileName) !== normalizeName(fileName))
+      );
+      setActionMessage({ text: `Restarted ingestion for ${fileName}.`, error: false });
+      loadIncomplete();
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Could not restart ingestion",
+        error: true,
+      });
+    } finally {
+      setRestartingName(null);
     }
   }
 
@@ -1151,6 +1209,71 @@ export default function UploadPage() {
             </Card>
           )}
 
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileSearch className="size-4" />
+                Stored Markdown
+              </CardTitle>
+              <CardDescription>
+                Scans Blob for parsed Markdown with no document behind it — the
+                expensive half of an ingestion, already paid for. Finds runs from
+                before anything tracked them, which the list above cannot.
+              </CardDescription>
+              <CardAction>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={scanMarkdown}
+                  disabled={scanningMarkdown}
+                >
+                  {scanningMarkdown ? <Loader2 className="animate-spin" /> : <FileSearch />}
+                  {stranded === null ? "Scan" : "Rescan"}
+                </Button>
+              </CardAction>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              {stranded === null && (
+                <p className="text-sm text-muted-foreground">
+                  Not scanned yet.
+                </p>
+              )}
+              {stranded !== null && stranded.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  Every stored Markdown belongs to a document in the knowledge base.
+                </p>
+              )}
+              {(stranded ?? []).map((item) => (
+                <div
+                  key={item.fileName}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{item.fileName}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Parsed {formatDate(item.markdownAt)} · {formatBytes(item.markdownBytes)} of
+                      Markdown · PDF {formatBytes(item.sizeBytes)}
+                      {item.tracked && " · already listed above"}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant={item.tracked ? "outline" : "default"}
+                    onClick={() => handleRestart(item.fileName)}
+                    disabled={restartingName === item.fileName}
+                    title="Ingest from this saved Markdown — the PDF is not parsed again"
+                  >
+                    {restartingName === item.fileName ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <PlayCircle />
+                    )}
+                    Restart ingestion
+                  </Button>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
         </div>
 
         <Card className="w-full min-w-0 lg:flex-1">

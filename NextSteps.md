@@ -40,6 +40,7 @@
 - ✓ `request_document` MCP tool plus an approval queue on the upload page, fetching an approved document by URL (`db/document_requests.sql`, [lib/fetchDocument.ts](lib/fetchDocument.ts))
 - ✓ Rebuild a document's graph without re-embedding it (`POST /api/reextractGraph`)
 - ✓ Figure extraction: PNGs cropped from the page, described, and embedded multimodally into the existing index (`lib/figures.ts`, `extractFigures`/`embedFigures`, `POST /api/extractFigures`)
+- ✓ Scan Blob for parsed Markdown with no document behind it, for runs stranded before anything tracked them (`GET/POST /api/strandedMarkdown`, [lib/strandedMarkdown.ts](lib/strandedMarkdown.ts))
 - ✓ Track ingestion state in Postgres so an interrupted run can be finished later (`db/ingestion_runs.sql`, `GET/POST /api/incompleteIngestions`) — also fixes retry, which used to read the resume point out of the workflow journal and fail with "saved resume point is unreadable"
 - ✓ Whole-knowledge-graph viewer at `/graph` (`GET /api/graph`, canvas force layout in [lib/forceLayout.ts](lib/forceLayout.ts))
 
