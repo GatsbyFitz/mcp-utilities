@@ -11,6 +11,9 @@ import {
   MAX_EMBED_FIGURE_EDGE_PX,
   MAX_STORED_FIGURE_EDGE_PX,
   STORED_FIGURE_SCALE,
+  cropGeometry,
+  usableBox,
+  type FigureBox,
   figureBlobPrefix,
   figurePagesFrom,
   type ExtractedFigure,
@@ -34,7 +37,12 @@ Identify every figure on the page: diagrams, process flows, flowcharts, charts, 
 
 For each figure:
 - "description": what the figure shows, in prose, grounded in what is visible. Name the entities, the roles, and the direction of any flow — this text is what someone searching will match against, so "Process flow: Retailer submits a change request to AEMO, which notifies the incumbent Metering Coordinator within 2 business days" is useful and "a diagram" is not. Transcribe labels exactly as written.
-- "bbox": the figure's bounding box on the page as [x0, y0, x1, y1], each 0-1000, measured from the top-left corner. Include the figure's own caption and axis labels; exclude surrounding body text.`;
+- the figure's bounding box on the page, as four separate numbers, each 0-1000 measured from the TOP-LEFT corner of the page:
+  - "x0": left edge, "x1": right edge (x increases to the right)
+  - "y0": top edge, "y1": bottom edge (y increases downward)
+  Include the whole figure — every box, arrow, label and axis, plus its caption — and err on the generous side. A box that is too small loses part of the diagram permanently; a box that is too large only includes some whitespace. Exclude surrounding body text.
+
+Report each box in the page's own frame, not relative to any other figure.`;
 
 // Deliberately unconstrained, per the workflow rules: Gemini drops most JSON
 // Schema string/array constraints, so `.min`/`.max` here would fail to steer
@@ -45,21 +53,14 @@ const FigureSchema = z.object({
     .array(
       z.object({
         description: z.string(),
-        bbox: z.array(z.number()),
+        x0: z.number(),
+        y0: z.number(),
+        x1: z.number(),
+        y1: z.number(),
       })
     )
     .default([]),
 });
-
-/** A bbox is only usable if it is in range and encloses a non-trivial area. */
-function usableBox(bbox: number[]): boolean {
-  if (bbox.length !== 4 || bbox.some((n) => !Number.isFinite(n))) return false;
-  const [x0, y0, x1, y1] = bbox;
-  if (x0 < 0 || y0 < 0 || x1 > 1000 || y1 > 1000) return false;
-  // Below about 5% of a side the crop is almost certainly a misfire, and a
-  // sliver of a diagram is worth less than the whole page it came from.
-  return x1 - x0 >= 50 && y1 - y0 >= 50;
-}
 
 export async function extractFigures(
   fileName: string,
@@ -128,14 +129,25 @@ export async function extractFigures(
           const description = figure.description.trim().slice(0, MAX_FIGURE_DESCRIPTION);
           if (!description) return null;
 
+          // Logged because the failure mode is silent: a mislocated box still
+          // produces a plausible-looking PNG, and the only way to tell a real
+          // crop from a bad one after the fact is to have the numbers.
+          const box = usableBox(figure);
+          if (!box) {
+            console.warn(
+              `[extractFigures] ${fileName} p${page} #${n}: unusable box ` +
+                `(${figure.x0}, ${figure.y0}, ${figure.x1}, ${figure.y1}) — cropping whole page`
+            );
+          }
+
           // Two renders of the same clip rectangle, not one render downscaled:
           // mupdf rasterises from the PDF each time, so the small copy costs a
           // little CPU and the stored copy loses nothing to its existence.
           const stored = cropPage(
-            mupdf, loaded, bounds, figure.bbox, STORED_FIGURE_SCALE, MAX_STORED_FIGURE_EDGE_PX
+            mupdf, loaded, bounds, box, STORED_FIGURE_SCALE, MAX_STORED_FIGURE_EDGE_PX
           );
           const forEmbedding = cropPage(
-            mupdf, loaded, bounds, figure.bbox, STORED_FIGURE_SCALE, MAX_EMBED_FIGURE_EDGE_PX
+            mupdf, loaded, bounds, box, STORED_FIGURE_SCALE, MAX_EMBED_FIGURE_EDGE_PX
           );
 
           const blob = await put(
@@ -173,53 +185,19 @@ export async function extractFigures(
  * alternative would be rendering the whole page and cropping the PNG, which
  * needs a raster library this project deliberately does not have.
  *
- * An unusable bbox falls back to the whole page. A model that mislocated a
- * figure still tells us the page it is on, and a full page is worth more to
- * the reader than a dropped figure or a sliver of one.
+ * A null box falls back to the whole page. A model that mislocated a figure
+ * still tells us the page it is on, and a full page is worth more to the
+ * reader than a dropped figure or a sliver of one.
  */
 function cropPage(
   mupdf: typeof import("mupdf"),
   page: import("mupdf").Page,
   bounds: [number, number, number, number],
-  bbox: number[],
+  box: FigureBox | null,
   maxScale: number,
   maxEdgePx: number
 ): Buffer {
-  const [pageX0, pageY0, pageX1, pageY1] = bounds;
-  const width = pageX1 - pageX0;
-  const height = pageY1 - pageY0;
-
-  const region = usableBox(bbox)
-    ? ([
-        pageX0 + (bbox[0] / 1000) * width,
-        pageY0 + (bbox[1] / 1000) * height,
-        pageX0 + (bbox[2] / 1000) * width,
-        pageY0 + (bbox[3] / 1000) * height,
-      ] as const)
-    : ([pageX0, pageY0, pageX1, pageY1] as const);
-
-  // Scale up to `maxScale`, backing off only far enough to keep the longest
-  // edge within `maxEdgePx`. The caller decides which ceiling applies: a
-  // generous one for the image that gets stored and read, a small one for the
-  // copy that has to fit in an embedding request.
-  const longest = Math.max(region[2] - region[0], region[3] - region[1]);
-  const scale = Math.min(maxScale, maxEdgePx / Math.max(longest, 1));
-
-  // Derive the box from its origin plus a bounded width/height rather than by
-  // rounding both corners: flooring the near corner and ceiling the far one
-  // grows the box by up to a pixel on each axis, which put a "768px" render at
-  // 769. Harmless against a self-imposed budget, but not against an API limit.
-  const originX = Math.floor(region[0] * scale);
-  const originY = Math.floor(region[1] * scale);
-  const targetWidth = Math.min(Math.ceil((region[2] - region[0]) * scale), maxEdgePx);
-  const targetHeight = Math.min(Math.ceil((region[3] - region[1]) * scale), maxEdgePx);
-
-  const target: [number, number, number, number] = [
-    originX,
-    originY,
-    originX + targetWidth,
-    originY + targetHeight,
-  ];
+  const { scale, target } = cropGeometry(bounds, box, maxScale, maxEdgePx);
 
   const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, target, false);
   pixmap.clear(255);
