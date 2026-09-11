@@ -72,6 +72,119 @@ export const MAX_EMBED_FIGURE_EDGE_PX = 768;
 export const FIGURE_RENDER_SCALE = 2;
 
 /**
+ * A figure's box on its page, normalised to 0-1000 from the top-left corner.
+ *
+ * Named fields rather than a `[x0, y0, x1, y1]` array on purpose. Gemini's own
+ * normalised-box convention is `[ymin, xmin, ymax, xmax]`, so a positional
+ * array asks the model to abandon the ordering it was trained on and gives no
+ * signal at all when it doesn't: the numbers are all in range, `usableBox`
+ * passes, and the crop silently comes out transposed — a tall narrow slice of
+ * the left of the page, cutting the diagram off down its right edge. Field
+ * names cannot be transposed.
+ */
+export interface FigureBox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/**
+ * Margin added to every side of a detected box, in the same 0-1000 units —
+ * 1.5% of the page.
+ *
+ * A box that clips is worse than one that runs wide: a cropped-off axis label
+ * or the right-hand column of a flowchart is lost for good, while a little
+ * surrounding whitespace costs nothing to the reader and almost nothing to the
+ * embedding. Clamped to the page, so padding can never push the crop outside
+ * it.
+ */
+export const FIGURE_BOX_PADDING = 15;
+
+/**
+ * The padded box to crop, or null to fall back to the whole page.
+ *
+ * Corners are sorted rather than trusted: which number is the near edge is the
+ * one thing left for a model to get backwards now that the axes are named, and
+ * it costs nothing to recover. Everything else is a rejection — a box out of
+ * range or enclosing almost no area is a misfire, and a sliver of a diagram is
+ * worth less than the whole page it came from.
+ */
+export function usableBox(figure: {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}): FigureBox | null {
+  const corners = [figure.x0, figure.y0, figure.x1, figure.y1];
+  if (corners.some((n) => !Number.isFinite(n))) return null;
+
+  const x0 = Math.min(figure.x0, figure.x1);
+  const x1 = Math.max(figure.x0, figure.x1);
+  const y0 = Math.min(figure.y0, figure.y1);
+  const y1 = Math.max(figure.y0, figure.y1);
+
+  if (x0 < 0 || y0 < 0 || x1 > 1000 || y1 > 1000) return null;
+  // Below about 5% of a side the crop is almost certainly a misfire.
+  if (x1 - x0 < 50 || y1 - y0 < 50) return null;
+
+  return {
+    x0: Math.max(0, x0 - FIGURE_BOX_PADDING),
+    y0: Math.max(0, y0 - FIGURE_BOX_PADDING),
+    x1: Math.min(1000, x1 + FIGURE_BOX_PADDING),
+    y1: Math.min(1000, y1 + FIGURE_BOX_PADDING),
+  };
+}
+
+/**
+ * Where to point the rasteriser, given a page and the box to crop from it.
+ *
+ * Pure arithmetic, kept out of the extraction step so it can be tested without
+ * a PDF, a model call or the workflow runtime — this is the geometry that
+ * decides whether a stored figure is the diagram or a slice of it, and it is
+ * not otherwise observable until someone opens the PNG.
+ *
+ * `scale` is chosen to reach `maxScale` unless that would put the longest edge
+ * past `maxEdgePx`, in which case it backs off just far enough. The target box
+ * is then derived from its origin plus a bounded width and height rather than
+ * by rounding both corners: flooring the near corner and ceiling the far one
+ * grows the box by up to a pixel on each axis, which put a "768px" render at
+ * 769. Harmless against a self-imposed budget, not against an API limit.
+ */
+export function cropGeometry(
+  bounds: readonly [number, number, number, number],
+  box: FigureBox | null,
+  maxScale: number,
+  maxEdgePx: number
+): { scale: number; target: [number, number, number, number] } {
+  const [pageX0, pageY0, pageX1, pageY1] = bounds;
+  const width = pageX1 - pageX0;
+  const height = pageY1 - pageY0;
+
+  const region = box
+    ? ([
+        pageX0 + (box.x0 / 1000) * width,
+        pageY0 + (box.y0 / 1000) * height,
+        pageX0 + (box.x1 / 1000) * width,
+        pageY0 + (box.y1 / 1000) * height,
+      ] as const)
+    : ([pageX0, pageY0, pageX1, pageY1] as const);
+
+  const longest = Math.max(region[2] - region[0], region[3] - region[1]);
+  const scale = Math.min(maxScale, maxEdgePx / Math.max(longest, 1));
+
+  const originX = Math.floor(region[0] * scale);
+  const originY = Math.floor(region[1] * scale);
+  const targetWidth = Math.min(Math.ceil((region[2] - region[0]) * scale), maxEdgePx);
+  const targetHeight = Math.min(Math.ceil((region[3] - region[1]) * scale), maxEdgePx);
+
+  return {
+    scale,
+    target: [originX, originY, originX + targetWidth, originY + targetHeight],
+  };
+}
+
+/**
  * Figures per embedding request. Derived from two `gemini-embedding-2` API
  * limits, not a throughput knob — raising it to save round trips reintroduces
  * a hard failure:
