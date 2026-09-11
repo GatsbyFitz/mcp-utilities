@@ -32,12 +32,13 @@ export async function contextualizeChunks(fileName: string, markdown: string): P
 
   const title = extractTitle(markdown, fileName);
   const chunks = chunkText(markdown);
+  const document = `${title}\n\n${markdown}`;
 
-  return mapPool(chunks, 5, async (chunk, i) => {
+  const contextFor = async (chunk: string, i: number): Promise<string> => {
     try {
       const { text } = await generateText({
         model: "google/gemini-3.5-flash-lite",
-        prompt: CONTEXT_PROMPT(`${title}\n\n${markdown}`, chunk),
+        prompt: CONTEXT_PROMPT(document, chunk),
       });
       return text.trim().slice(0, MAX_CONTEXT);
     } catch (error) {
@@ -50,5 +51,22 @@ export async function contextualizeChunks(fileName: string, markdown: string): P
       );
       return "";
     }
-  });
+  };
+
+  if (chunks.length === 0) return [];
+
+  // The first call is made alone, before the rest fan out.
+  //
+  // Every call here sends the *entire document* as the prompt's prefix and
+  // differs only in the chunk at the end, so this step's input is roughly the
+  // document times the chunk count — comfortably the largest model spend in
+  // the pipeline. Gemini caches a repeated prefix implicitly, but only against
+  // a request it has already seen: firing five identical-prefix calls at once
+  // into a cold cache pays full price for all five. One call first warms it,
+  // and costs one call's worth of latency on a step that already takes
+  // minutes.
+  const first = await contextFor(chunks[0], 0);
+  const rest = await mapPool(chunks.slice(1), 5, (chunk, i) => contextFor(chunk, i + 1));
+
+  return [first, ...rest];
 }

@@ -197,6 +197,19 @@ export const MAX_INLINE_FIGURE_IMAGES = 4;
 export const MAX_INLINE_FIGURE_BYTES = 1_500_000;
 
 /**
+ * A third render, stored alongside the full-size crop and used only when a
+ * figure is returned inline by a search tool.
+ *
+ * Images are billed by area — roughly width x height / 750 tokens — so a
+ * 2048px crop is ~3,500 tokens and four of them cost more than every text
+ * result in the same response combined. At 1024px the same four cost ~3,500
+ * between them, and a diagram at 1024px is still legible to a model that only
+ * has to read its labels. The stored crop is untouched: it is what a person
+ * opens from a citation, and that is a different job.
+ */
+export const MAX_INLINE_FIGURE_EDGE_PX = 1024;
+
+/**
  * Figures per embedding request. Derived from two `gemini-embedding-2` API
  * limits, not a throughput knob — raising it to save round trips reintroduces
  * a hard failure:
@@ -243,6 +256,8 @@ export interface ExtractedFigure {
   description: string;
   /** Public Blob URL of the high-resolution crop. This is the one people see. */
   imageUrl: string;
+  /** Public Blob URL of the smaller copy a search tool returns inline. */
+  inlineImageUrl: string;
   /**
    * A *separate*, smaller render of the same region, base64, for the embedding
    * request only. Named for its purpose so it cannot be mistaken for the

@@ -36,13 +36,16 @@ export async function fetchFigureImages(
   results: { n: number; citation: Citation }[],
   limit: number = MAX_INLINE_FIGURE_IMAGES
 ): Promise<InlineFigureImage[]> {
-  const figures = results.filter((r) => r.citation.imageUrl).slice(0, limit);
+  const figures = results.filter((r) => r.citation.inlineImageUrl).slice(0, limit);
   if (figures.length === 0) return [];
 
   const fetched = await Promise.all(
     figures.map(async ({ n, citation }) => {
       try {
-        const res = await fetch(citation.imageUrl!);
+        // The small copy, not the stored crop: images are billed by area, and
+        // the full-size one costs about four times as much to say the same
+        // thing. Older figures have no small copy and fall back to it.
+        const res = await fetch(citation.inlineImageUrl!);
         if (!res.ok) return null;
 
         const mimeType = res.headers.get("content-type") ?? "image/png";

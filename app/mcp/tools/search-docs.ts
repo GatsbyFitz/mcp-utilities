@@ -183,7 +183,15 @@ export function registerSearchDocsTool(server: McpServer): void {
               { type: "image" as const, data: image.data, mimeType: image.mimeType },
             ]),
           ],
-          structuredContent: { query, results },
+          // `text` is deliberately absent here. It is already in the rendered
+          // block above, in full, and that is the copy the model reads and
+          // cites — repeating it doubles the tokens of every search for bytes
+          // nothing reads twice. Identifiers, citations and scores stay, since
+          // those are what a programmatic consumer actually needs.
+          structuredContent: {
+            query,
+            results: results.map(({ text: _text, ...rest }) => rest),
+          },
         };
       } catch (err) {
         // Surface failures explicitly instead of silently returning a bare

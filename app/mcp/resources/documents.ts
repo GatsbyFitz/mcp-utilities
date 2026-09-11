@@ -39,7 +39,9 @@ export function registerDocumentsResource(server: McpServer): void {
             {
               uri: uri.href,
               mimeType: "application/json",
-              text: JSON.stringify({ documents }, null, 2),
+              // Compact, not pretty-printed: this is read by a model, and the
+              // indentation is tokens spent on whitespace.
+              text: JSON.stringify({ documents }),
             },
           ],
         };
@@ -55,11 +57,10 @@ export function registerDocumentsResource(server: McpServer): void {
             {
               uri: uri.href,
               mimeType: "application/json",
-              text: JSON.stringify(
-                { error: `Could not read the document list: ${message}`, documents: [] },
-                null,
-                2
-              ),
+              text: JSON.stringify({
+                error: `Could not read the document list: ${message}`,
+                documents: [],
+              }),
             },
           ],
         };

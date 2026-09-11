@@ -9,6 +9,7 @@ import {
   MAX_FIGURES_PER_PAGE,
   MAX_FIGURE_DESCRIPTION,
   MAX_EMBED_FIGURE_EDGE_PX,
+  MAX_INLINE_FIGURE_EDGE_PX,
   MAX_STORED_FIGURE_EDGE_PX,
   STORED_FIGURE_SCALE,
   cropGeometry,
@@ -149,17 +150,29 @@ export async function extractFigures(
           const forEmbedding = cropPage(
             mupdf, loaded, bounds, box, STORED_FIGURE_SCALE, MAX_EMBED_FIGURE_EDGE_PX
           );
-
-          const blob = await put(
-            `${figureBlobPrefix(fileName)}${uuidv4()}-p${page}-${n}.png`,
-            stored,
-            { access: "public", addRandomSuffix: false, contentType: "image/png" }
+          // A third render, for the copy a search tool returns inline. Stored
+          // rather than derived on demand because there is no raster library
+          // here to downscale with — mupdf rasterises from the PDF, and the
+          // PDF is not in hand when a tool answers a query.
+          const inline = cropPage(
+            mupdf, loaded, bounds, box, STORED_FIGURE_SCALE, MAX_INLINE_FIGURE_EDGE_PX
           );
+
+          const stem = `${figureBlobPrefix(fileName)}${uuidv4()}-p${page}-${n}`;
+          const [blob, inlineBlob] = await Promise.all([
+            put(`${stem}.png`, stored, {
+              access: "public", addRandomSuffix: false, contentType: "image/png",
+            }),
+            put(`${stem}-inline.png`, inline, {
+              access: "public", addRandomSuffix: false, contentType: "image/png",
+            }),
+          ]);
 
           return {
             page,
             description,
             imageUrl: blob.url,
+            inlineImageUrl: inlineBlob.url,
             embedPngBase64: forEmbedding.toString("base64"),
           } satisfies ExtractedFigure;
         })
