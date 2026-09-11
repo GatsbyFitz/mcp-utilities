@@ -62,10 +62,13 @@ export function registerSearchDocsTool(server: McpServer): void {
         "for a document, say so rather than inventing one. Some results are " +
         "figures cropped from a page \u2014 a diagram, flowchart or chart. Those " +
         "are returned as actual images after the text, each labelled with the " +
-        "result number it belongs to, as well as being linked inline in the " +
-        "text. Read the image itself when answering, cite a figure by its " +
-        "document and page like any other result, and show it rather than " +
-        "only describing it.",
+        "result number it belongs to. Read the image itself when answering. " +
+        "Each figure also carries two Markdown links in the text: one to the " +
+        "figure image and one to the page of the source PDF it came from. " +
+        "Copy both into your answer as Markdown links, never as bare URLs \u2014 " +
+        "the reader may be using a client that does not render images from a " +
+        "tool result, and the links are the only part of a figure that always " +
+        "survives into what they see.",
       inputSchema: z.object({
         query: z.string().min(2).max(1000),
         topK: z.number().int().min(1).max(100).default(25),
