@@ -18,6 +18,12 @@ interface ChunkMetadata {
   kind?: string;
   /** Public URL of the figure PNG. Present only when `kind` is "figure". */
   imageUrl?: string;
+  /**
+   * Smaller copy of the same figure, for returning inline in a tool response.
+   * Absent on figures extracted before it existed, which fall back to
+   * `imageUrl` — correct, just more expensive.
+   */
+  inlineImageUrl?: string;
 }
 
 interface Citation {
@@ -30,6 +36,8 @@ interface Citation {
   chunkIndex: number | null;
   /** Set when this result is a figure rather than an excerpt of prose. */
   imageUrl: string | null;
+  /** The copy to send inline; falls back to `imageUrl` where none was stored. */
+  inlineImageUrl: string | null;
 }
 
 /** "service-level-procedure-mp-services-v20.pdf" -> "Service Level Procedure Mp Services V20" */
@@ -57,6 +65,7 @@ function toCitation(md: ChunkMetadata): Citation {
     source: md.source ?? "unknown",
     chunkIndex: md.chunkIndex ?? null,
     imageUrl: md.imageUrl ?? null,
+    inlineImageUrl: md.inlineImageUrl ?? md.imageUrl ?? null,
   };
 }
 

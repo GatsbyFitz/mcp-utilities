@@ -12,7 +12,7 @@ Retry semantics come from the error type: throw `FatalError` from `workflow` to 
 
 ## The chunking invariant
 
-[lib/chunking.ts](../../lib/chunking.ts) is the single source of truth for chunk boundaries and IDs. `createEmbeddings` and `extractGraph` both call it independently, and `search_graph` stores a `chunkId` on each Neo4j relationship that it later feeds straight to `vectorIndex.fetch()`. If those two steps ever disagree on chunking, every graph hit returns a wrong or missing excerpt. Change `chunkText`/`chunkId` only with a full re-ingest in mind.
+[lib/chunking.ts](../../lib/chunking.ts) is the single source of truth for chunk boundaries and IDs. `createEmbeddings` and `extractGraph` both call it independently, and `search_graph` stores a `chunkId` on each Neo4j relationship that it later feeds straight to `vectorIndex.fetch()`. If those two steps ever disagree on chunking, every graph hit returns a wrong or missing excerpt. Change `chunkText`/`chunkId` only with a full re-ingest in mind — the table-row splitting added in `splitTableRows` is exactly such a change, and every document predating it keeps the old boundaries until it is re-ingested.
 
 ## Embeddings
 

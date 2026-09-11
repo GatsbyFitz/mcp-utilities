@@ -156,7 +156,15 @@ export function registerSearchGraphTool(server: McpServer): void {
                 `Sources:\n${sources}`,
             },
           ],
-          structuredContent: { query, relations, excerpts },
+          // Excerpt text is dropped for the same reason as in search_docs: it
+          // is rendered in full above and repeating it doubles the response.
+          // `relations` stay whole — they are short, structured, and the part
+          // a caller is most likely to want to walk.
+          structuredContent: {
+            query,
+            relations,
+            excerpts: excerpts.map(({ text: _text, ...rest }) => rest),
+          },
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

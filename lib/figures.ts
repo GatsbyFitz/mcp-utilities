@@ -102,6 +102,49 @@ export interface FigureBox {
 export const FIGURE_BOX_PADDING = 15;
 
 /**
+ * Smallest share of a page a real figure covers, as a fraction of its area.
+ *
+ * This is the backstop behind the prompt, for page furniture the model reports
+ * as a figure anyway: a logo, a letterhead mark, a signature block, an icon.
+ * Those are small — a header logo is perhaps 17% of the width and 5% of the
+ * height, so under 1% of the page — while a process diagram worth indexing is
+ * usually well into double figures. 3% sits in the gap with room either side.
+ *
+ * Deliberately checked *before* padding, so the margin added for legibility
+ * cannot lift a logo over the bar.
+ */
+export const MIN_FIGURE_AREA = 0.03;
+
+/**
+ * Share of the page a box covers, 0-1, or NaN if the numbers are unusable.
+ *
+ * Corners are sorted here as they are in `usableBox`, so a box reported back
+ * to front measures its real area rather than a negative one.
+ */
+export function boxArea(figure: { x0: number; y0: number; x1: number; y1: number }): number {
+  const width = Math.abs(figure.x1 - figure.x0) / 1000;
+  const height = Math.abs(figure.y1 - figure.y0) / 1000;
+  return width * height;
+}
+
+/**
+ * True for something too small to be worth indexing as a figure.
+ *
+ * Kept separate from `usableBox` because the two failures want opposite
+ * handling. An unusable box means the model found a real figure and
+ * mislocated it, so the whole page is the right fallback — a page is worth
+ * more than a dropped diagram. A decorative mark means there was nothing worth
+ * cropping in the first place, and falling back to the whole page there would
+ * turn a logo into a full-page "figure": the worst possible outcome, since it
+ * is then embedded, stored, and returned inline to a model as if it answered
+ * something.
+ */
+export function isDecorative(figure: { x0: number; y0: number; x1: number; y1: number }): boolean {
+  const area = boxArea(figure);
+  return Number.isFinite(area) && area > 0 && area < MIN_FIGURE_AREA;
+}
+
+/**
  * The padded box to crop, or null to fall back to the whole page.
  *
  * Corners are sorted rather than trusted: which number is the near edge is the
@@ -197,6 +240,19 @@ export const MAX_INLINE_FIGURE_IMAGES = 4;
 export const MAX_INLINE_FIGURE_BYTES = 1_500_000;
 
 /**
+ * A third render, stored alongside the full-size crop and used only when a
+ * figure is returned inline by a search tool.
+ *
+ * Images are billed by area — roughly width x height / 750 tokens — so a
+ * 2048px crop is ~3,500 tokens and four of them cost more than every text
+ * result in the same response combined. At 1024px the same four cost ~3,500
+ * between them, and a diagram at 1024px is still legible to a model that only
+ * has to read its labels. The stored crop is untouched: it is what a person
+ * opens from a citation, and that is a different job.
+ */
+export const MAX_INLINE_FIGURE_EDGE_PX = 1024;
+
+/**
  * Figures per embedding request. Derived from two `gemini-embedding-2` API
  * limits, not a throughput knob — raising it to save round trips reintroduces
  * a hard failure:
@@ -243,6 +299,8 @@ export interface ExtractedFigure {
   description: string;
   /** Public Blob URL of the high-resolution crop. This is the one people see. */
   imageUrl: string;
+  /** Public Blob URL of the smaller copy a search tool returns inline. */
+  inlineImageUrl: string;
   /**
    * A *separate*, smaller render of the same region, base64, for the embedding
    * request only. Named for its purpose so it cannot be mistaken for the

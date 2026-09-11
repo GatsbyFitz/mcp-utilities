@@ -121,6 +121,7 @@ export async function embedFigures(
         // The two fields that make it a figure.
         kind: FIGURE_KIND,
         imageUrl: figure.imageUrl,
+        inlineImageUrl: figure.inlineImageUrl,
       },
     }))
   );

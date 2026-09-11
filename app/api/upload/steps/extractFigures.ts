@@ -9,10 +9,14 @@ import {
   MAX_FIGURES_PER_PAGE,
   MAX_FIGURE_DESCRIPTION,
   MAX_EMBED_FIGURE_EDGE_PX,
+  MAX_INLINE_FIGURE_EDGE_PX,
   MAX_STORED_FIGURE_EDGE_PX,
   STORED_FIGURE_SCALE,
   cropGeometry,
   usableBox,
+  isDecorative,
+  boxArea,
+  MIN_FIGURE_AREA,
   type FigureBox,
   figureBlobPrefix,
   figurePagesFrom,
@@ -33,7 +37,19 @@ import {
 
 const FIND_PROMPT = `You are given one page rendered from a regulatory PDF.
 
-Identify every figure on the page: diagrams, process flows, flowcharts, charts, schematics, and images of tables. Do NOT report ordinary body text, headers, footers, page numbers, or rule lines as figures. If the page has none, return an empty array.
+Report only figures that carry information a reader would need to understand the document: process flows, flowcharts, sequence and activity diagrams, swimlane charts, schematics, network or topology diagrams, state diagrams, timelines, graphs and plots, and images of tables.
+
+Do NOT report page furniture or decoration. Specifically ignore:
+- logos, brand marks, letterheads and cover-page branding
+- headers, footers, page numbers, and horizontal rules
+- watermarks, stamps, seals, signatures and initials
+- icons, bullets, arrows or symbols that are not part of a larger diagram
+- photographs used decoratively, and background images
+- QR codes and barcodes
+
+The test is whether someone answering a question about this document would ever need to look at it. A company logo on every page is not a figure. A diagram showing who notifies whom, and when, is.
+
+If the page has none, return an empty array. An empty array is the right answer for most pages, and is much better than reporting a logo.
 
 For each figure:
 - "description": what the figure shows, in prose, grounded in what is visible. Name the entities, the roles, and the direction of any flow — this text is what someone searching will match against, so "Process flow: Retailer submits a change request to AEMO, which notifies the incumbent Metering Coordinator within 2 business days" is useful and "a diagram" is not. Transcribe labels exactly as written.
@@ -129,6 +145,21 @@ export async function extractFigures(
           const description = figure.description.trim().slice(0, MAX_FIGURE_DESCRIPTION);
           if (!description) return null;
 
+          // Page furniture the prompt asked it to skip and it reported anyway.
+          // Dropped outright rather than sent to the whole-page fallback: that
+          // fallback exists for a real figure whose box is wrong, and applying
+          // it here would turn a logo into a full-page "figure" that then gets
+          // embedded, stored and returned to a model as if it answered
+          // something.
+          if (isDecorative(figure)) {
+            console.warn(
+              `[extractFigures] ${fileName} p${page} #${n}: dropped, covers ` +
+                `${(boxArea(figure) * 100).toFixed(1)}% of the page ` +
+                `(below ${MIN_FIGURE_AREA * 100}%) — "${description.slice(0, 60)}"`
+            );
+            return null;
+          }
+
           // Logged because the failure mode is silent: a mislocated box still
           // produces a plausible-looking PNG, and the only way to tell a real
           // crop from a bad one after the fact is to have the numbers.
@@ -149,17 +180,29 @@ export async function extractFigures(
           const forEmbedding = cropPage(
             mupdf, loaded, bounds, box, STORED_FIGURE_SCALE, MAX_EMBED_FIGURE_EDGE_PX
           );
-
-          const blob = await put(
-            `${figureBlobPrefix(fileName)}${uuidv4()}-p${page}-${n}.png`,
-            stored,
-            { access: "public", addRandomSuffix: false, contentType: "image/png" }
+          // A third render, for the copy a search tool returns inline. Stored
+          // rather than derived on demand because there is no raster library
+          // here to downscale with — mupdf rasterises from the PDF, and the
+          // PDF is not in hand when a tool answers a query.
+          const inline = cropPage(
+            mupdf, loaded, bounds, box, STORED_FIGURE_SCALE, MAX_INLINE_FIGURE_EDGE_PX
           );
+
+          const stem = `${figureBlobPrefix(fileName)}${uuidv4()}-p${page}-${n}`;
+          const [blob, inlineBlob] = await Promise.all([
+            put(`${stem}.png`, stored, {
+              access: "public", addRandomSuffix: false, contentType: "image/png",
+            }),
+            put(`${stem}-inline.png`, inline, {
+              access: "public", addRandomSuffix: false, contentType: "image/png",
+            }),
+          ]);
 
           return {
             page,
             description,
             imageUrl: blob.url,
+            inlineImageUrl: inlineBlob.url,
             embedPngBase64: forEmbedding.toString("base64"),
           } satisfies ExtractedFigure;
         })
