@@ -10,7 +10,7 @@
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
-import type { Root } from "mdast";
+import type { Root, Table } from "mdast";
 
 /**
  * Page-break marker emitted by `createMarkdown`, sitting immediately before
@@ -80,6 +80,13 @@ function wordCount(text: string): number {
   return text.split(/\s+/).filter(Boolean).length;
 }
 
+/** One piece of a block too large to keep whole, with the span of the source it came from. */
+interface BlockPart {
+  text: string;
+  start: number;
+  end: number;
+}
+
 /** Plain word-count split, used only as a fallback for a single block too large to keep whole. */
 function splitBySize(text: string, size: number): string[] {
   const words = text.split(/\s+/);
@@ -91,14 +98,99 @@ function splitBySize(text: string, size: number): string[] {
 }
 
 /**
+ * Splits an oversized table on row boundaries, repeating its header on every
+ * part. Returns null when there is nothing safe to split on, in which case the
+ * table is kept whole.
+ *
+ * A table is the one block `size` cannot bound, because it is a single
+ * Markdown block however long it runs: a 400-row obligations table arrives as
+ * one ~58,000-character chunk against ~2,000 for prose. That one chunk then
+ * gets one embedding covering every row (so retrieval cannot tell which row
+ * answered the query), one contextualisation call with the whole thing as
+ * input, and is inlined whole into any tool response that retrieves it.
+ *
+ * Splitting between rows is safe in a way splitting *within* one is not — a
+ * row is the table's unit of meaning — and repeating the header keeps each
+ * part self-describing, which is what makes a fragment still readable as a
+ * table rather than a grid of unlabelled cells.
+ *
+ * Every part's page span comes from its own rows, not the table's, so a table
+ * running across a page break cites the page the matched rows are actually on.
+ */
+function splitTableRows(text: string, table: Table, size: number): BlockPart[] | null {
+  const rows = table.children;
+  // Header plus at least two body rows, or there is no boundary worth using.
+  if (rows.length < 3) return null;
+
+  const header = rows[0];
+  const body = rows.slice(1);
+  const offsets = (node: { position?: { start: { offset?: number }; end: { offset?: number } } }) => {
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    return start === undefined || end === undefined ? null : { start, end };
+  };
+
+  const headerAt = offsets(header);
+  const bodyAt = body.map(offsets);
+  if (!headerAt || bodyAt.some((at) => at === null)) return null;
+
+  // From the header's start to the first body row's start, so the alignment
+  // row comes along with it — mdast models alignment as `table.align` rather
+  // than as a row, so it is only reachable through the source text.
+  const headerBlock = text.slice(headerAt.start, bodyAt[0]!.start).replace(/\s+$/, "");
+  const headerWords = wordCount(headerBlock);
+
+  const parts: BlockPart[] = [];
+  let rowTexts: string[] = [];
+  let partWords = headerWords;
+  let partStart: number | null = null;
+  let partEnd = 0;
+
+  function flushPart() {
+    if (rowTexts.length === 0) return;
+    parts.push({
+      text: `${headerBlock}\n${rowTexts.join("\n")}`,
+      start: partStart!,
+      end: partEnd,
+    });
+    rowTexts = [];
+    partWords = headerWords;
+    partStart = null;
+  }
+
+  for (const at of bodyAt) {
+    const rowText = text.slice(at!.start, at!.end);
+    const words = wordCount(rowText);
+    // A single row wider than `size` still goes in whole: the alternative is
+    // splitting one row across chunks, which is the thing tables must not do.
+    if (rowTexts.length > 0 && partWords + words > size) flushPart();
+    if (partStart === null) partStart = at!.start;
+    rowTexts.push(rowText);
+    partWords += words;
+    partEnd = at!.end;
+  }
+  flushPart();
+
+  // One part means the budget was never actually exceeded by the rows — a
+  // single enormous row. Keep the table whole rather than rewriting it into an
+  // identical copy of itself.
+  if (parts.length < 2) return null;
+
+  // The first part physically begins at the header, not at its first row.
+  parts[0].start = headerAt.start;
+  return parts;
+}
+
+/**
  * Structure-aware chunking: splits along Markdown block boundaries (headings,
  * paragraphs, tables, lists, ...) rather than a blind word count, so a table
  * or paragraph is never cut mid-block. Blocks are packed greedily up to
  * `size` words; a heading always starts a new chunk so each chunk carries its
- * own heading context. A table is never split internally — even if it alone
- * exceeds `size`, splitting it would change what it means — but any other
- * single block that alone exceeds `size` falls back to a plain word-count
- * split, since there's no smaller structural boundary to use instead. A
+ * own heading context. A table that alone exceeds `size` is split between its
+ * rows with the header repeated on each part — never within a row, which is
+ * the table's unit of meaning — and any other single block that alone exceeds
+ * `size` falls back to a plain word-count split, since there's no smaller
+ * structural boundary to use instead. A
  * heading with nothing under it yet always rides along with whatever follows
  * — including an oversized block — rather than being flushed alone; a
  * heading isolated from its own content is worse than one oversized chunk.
@@ -161,22 +253,32 @@ export function chunkTextWithPages(raw: string, size = 500): Chunk[] {
     // of leaving the first one isolated.
     if (isHeading && currentHasBody) flush();
 
-    if (!isTable && words > size) {
-      // No smaller structural boundary to split on than the word count. A
-      // pending heading rides along with the first piece rather than being
-      // flushed alone.
-      // One block split by word count has no finer offsets to attribute, so
+    if (words > size) {
+      // A table splits on row boundaries with its header repeated, so each
+      // part stays a readable table and reports the pages its own rows are on.
+      // Anything else has no structural boundary finer than the word count, so
       // every part reports the whole block's page span.
-      const parts = splitBySize(blockText, size);
-      current.push(parts[0]);
-      push(current.join("\n\n").trim(), currentStart ?? start, end);
-      for (const part of parts.slice(1)) push(part, start, end);
-      current = [];
-      currentWords = 0;
-      currentHasBody = false;
-      currentStart = null;
-      currentEnd = null;
-      continue;
+      //
+      // `splitTableRows` returns null when a table has nothing safe to split
+      // on — too few rows, or one row that alone busts the budget — and the
+      // table then falls through and is kept whole, as it always was.
+      const parts: BlockPart[] | null = isTable
+        ? splitTableRows(text, node as Table, size)
+        : splitBySize(blockText, size).map((part) => ({ text: part, start, end }));
+
+      if (parts && parts.length > 0) {
+        // A pending heading rides along with the first piece rather than being
+        // flushed alone.
+        current.push(parts[0].text);
+        push(current.join("\n\n").trim(), currentStart ?? parts[0].start, parts[0].end);
+        for (const part of parts.slice(1)) push(part.text, part.start, part.end);
+        current = [];
+        currentWords = 0;
+        currentHasBody = false;
+        currentStart = null;
+        currentEnd = null;
+        continue;
+      }
     }
 
     // Adding this block would overflow the chunk in progress — start fresh,
