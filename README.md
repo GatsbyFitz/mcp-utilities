@@ -162,7 +162,18 @@ The knowledge base table shows a **Figures** count per document. It is counted f
 
 **`search_docs` returns figures as actual images, not just links.** A result that *is* a picture is not served by a URL: the Markdown `![…](…)` only renders in a client that renders Markdown and will fetch a remote image, and the model answering the question never sees the pixels either way. So figure results are also appended to the tool response as MCP image content blocks, each preceded by a text block naming its result number — image content has no caption field, so without that label the model cannot tell which result a picture belongs to or cite it. [lib/figureImages.ts](lib/figureImages.ts) does the fetching, bounded rather than universal: at most `MAX_INLINE_FIGURE_IMAGES` (4), each under `MAX_INLINE_FIGURE_BYTES` (1.5 MB), since stored figures run to 2048px and base64 is ~1.33×, which would put eight of them at several megabytes on a transport that buffers the whole response. A figure that 404s, exceeds the budget, comes back as something other than an image, or fails outright is dropped rather than failing the search — it keeps the Markdown link it already had, so the cap costs reach, not access.
 
-A figure result also renders as a Markdown image followed by its description, built by `figureLine()` in [lib/citations.ts](lib/citations.ts) so every tool emits it identically. Its PNGs live under `figures/<file name>/` in Blob — a prefix rather than a uuid-first leaf name, so `deleteDocument` can list and remove them instead of orphaning them.
+A figure result also renders as a block — the image, then a line carrying two Markdown links — built by `figureLine()` in [lib/citations.ts](lib/citations.ts) so every tool emits it identically.
+
+```
+![B2B Procedure v3.2 (p. 64)](https://…/figures/….png)
+[Open figure](https://…/figures/….png) · [Source page 64](https://…/uploads/….pdf#page=64)
+```
+
+**The image embed alone was not enough.** `![…](…)` is not a *link* in most renderers: it produces a picture with no way to reach the file. And `sourceList` dedupes per document, so a figure's own URL appeared nowhere else in the response. Testing against the deployed server showed the consequence — the model read the figure and answered from it, but wrote "rendered inline above" and carried no URL forward, so a client showing only the final assistant message offered no route to the figure at all. A plain Markdown link survives both failures: it is text, and it is the one form a model reliably quotes.
+
+Both destinations are offered because they answer different questions — the PNG is the cropped diagram, the PDF anchor is where it came from, and in a regulatory corpus provenance is not optional. The anchor uses the blob `url`, which is served inline, never `blobDownloadUrl`, which forces a download and would defeat it; `#page=N` is a PDF Open Parameters convention, and a viewer that ignores it opens page 1 rather than failing. A figure with no known page gets the figure link only, never `#page=null`.
+
+**The page anchor lives on the result line, not in Sources**, because `sourceList` is deduplicated per document and two results from one PDF want different pages. Document-level links there are unchanged.
 
 **`pnpm verify:multimodal` checks the image is really reaching the model.** If `content` is dropped anywhere in transit the call still succeeds and still returns a 1536-dimension vector — it has simply never seen the image, and nothing throws or logs. That is not a breakage: `values` still carries the description, so figures stay retrievable, cited and displayed. What it decides is whether you are getting the multimodal upgrade you are paying request payload for, and it stops "multimodal didn't help on this corpus" being concluded about a path that was never switched on.
 

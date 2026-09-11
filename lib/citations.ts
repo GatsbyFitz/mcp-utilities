@@ -31,6 +31,13 @@ interface Citation {
   version: string | null;
   publisher: string | null;
   pages: string | null;
+  /**
+   * The first page, unformatted, for building a `#page=N` anchor.
+   *
+   * `pages` is prose ("pp. 10-11") and cannot be turned back into a number, so
+   * both are kept. Null on a document ingested before page markers existed.
+   */
+  pageStart: number | null;
   url: string | null;
   source: string;
   chunkIndex: number | null;
@@ -61,6 +68,7 @@ function toCitation(md: ChunkMetadata): Citation {
     version: md.version ?? null,
     publisher: md.publisher ?? null,
     pages: pageRange(md.pageStart, md.pageEnd),
+    pageStart: md.pageStart ?? null,
     url: md.blobUrl ?? null,
     source: md.source ?? "unknown",
     chunkIndex: md.chunkIndex ?? null,
@@ -87,19 +95,47 @@ function citationLine(n: number, c: Citation, score: number): string {
 }
 
 /**
- * The image line under a figure result: `![Title (p. 4)](https://…)`.
+ * The block under a figure result: the image, then links to it and to the page
+ * it was cropped from.
  *
- * An image rather than a plain link, so a client that renders Markdown shows
- * the figure inline instead of making the reader follow a URL to find out what
- * it is — the picture is the payload here, unlike a text excerpt where the
- * link is only provenance. Returns null for a text chunk, so callers can emit
- * it unconditionally.
+ * ```
+ * ![B2B Procedure v3.2 (p. 64)](https://…/figures/….png)
+ * [Open figure](https://…/figures/….png) · [Source page 64](https://…/uploads/….pdf#page=64)
+ * ```
+ *
+ * The image embed alone was not enough, which is the whole reason this is a
+ * block rather than a line. `![…](…)` is not a *link* in most renderers — it
+ * produces a picture with no way to reach the file — and `sourceList` dedupes
+ * by document, so a figure's own URL appeared nowhere else in the response. A
+ * client that strips tool-result Markdown, or a model that describes the
+ * figure instead of quoting it, therefore left the reader with no route to it
+ * at all. A plain Markdown link survives both: it is text, and it is the one
+ * form a model reliably carries into its answer.
+ *
+ * Both destinations are offered because they answer different questions. The
+ * PNG is the cropped diagram itself; the PDF anchor is where it came from, and
+ * in a regulatory corpus provenance is not optional.
+ *
+ * Returns null for a text chunk, so callers can emit it unconditionally.
  */
 function figureLine(c: Citation): string | null {
   if (!c.imageUrl) return null;
+
   const detail = c.pages ? ` (${c.pages})` : "";
   const label = escapeLinkLabel(`${citationLabel(c)}${detail}`);
-  return `![${label}](${linkDestination(c.imageUrl)})`;
+  const image = linkDestination(c.imageUrl);
+
+  const links = [`[Open figure](${image})`];
+
+  // `url` is served inline; `blobDownloadUrl` forces a download and would
+  // defeat the anchor. Omitted entirely when the page is unknown rather than
+  // emitting `#page=null` — a document ingested before page markers existed
+  // has no page to point at.
+  if (c.url && c.pageStart !== null) {
+    links.push(`[Source page ${c.pageStart}](${linkDestination(`${c.url}#page=${c.pageStart}`)})`);
+  }
+
+  return `![${label}](${image})\n${links.join(" · ")}`;
 }
 
 /** Markdown link text is delimited by brackets, so a title containing one would break it. */
