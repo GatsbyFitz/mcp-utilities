@@ -5,6 +5,7 @@ import { WeightingStrategy } from "@upstash/vector";
 import { vectorIndex } from "@/lib/vector";
 import type { ChunkMetadata } from "@/lib/citations";
 import { toCitation, citationLine, figureLine, sourceList } from "@/lib/citations";
+import { fetchFigureImages } from "@/lib/figureImages";
 import { sparseVector } from "@/lib/sparse";
 import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/embedding";
 
@@ -59,10 +60,12 @@ export function registerSearchDocsTool(server: McpServer): void {
         "range (e.g. 'Metering Provider Services SLP v2.0, pp. 10\u201311'), " +
         "and include each document's URL at most once. If no URL is present " +
         "for a document, say so rather than inventing one. Some results are " +
-        "figures cropped from a page \u2014 a diagram, flowchart or chart \u2014 " +
-        "rendered as an image followed by a description of it. Cite a figure " +
-        "by its document and page like any other result, and show the image " +
-        "rather than only describing it.",
+        "figures cropped from a page \u2014 a diagram, flowchart or chart. Those " +
+        "are returned as actual images after the text, each labelled with the " +
+        "result number it belongs to, as well as being linked inline in the " +
+        "text. Read the image itself when answering, cite a figure by its " +
+        "document and page like any other result, and show it rather than " +
+        "only describing it.",
       inputSchema: z.object({
         query: z.string().min(2).max(1000),
         topK: z.number().int().min(1).max(100).default(25),
@@ -157,6 +160,13 @@ export function registerSearchDocsTool(server: McpServer): void {
         // so every tool emits the same clickable format.
         const sources = sourceList(results.map((r) => r.citation));
 
+        // Figures travel as image blocks, not just as links in the text above:
+        // the picture is the answer for these results, and a URL is not
+        // something the model can read. Bounded and best-effort — see
+        // lib/figureImages.ts — so a slow or oversized PNG costs its own inline
+        // copy and nothing else.
+        const images = await fetchFigureImages(results);
+
         return {
           content: [
             {
@@ -165,6 +175,13 @@ export function registerSearchDocsTool(server: McpServer): void {
                 `Found ${results.length} matching chunks for "${query}".\n\n` +
                 `${rendered}\n\nSources:\n${sources}`,
             },
+            // Each image is preceded by its own label: MCP image content has no
+            // caption, so without this the model cannot tell which result a
+            // picture belongs to and cannot cite it.
+            ...images.flatMap((image) => [
+              { type: "text" as const, text: image.label },
+              { type: "image" as const, data: image.data, mimeType: image.mimeType },
+            ]),
           ],
           structuredContent: { query, results },
         };

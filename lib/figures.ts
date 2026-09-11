@@ -185,6 +185,18 @@ export function cropGeometry(
 }
 
 /**
+ * Figure images returned inline by a search tool, and the byte ceiling for one.
+ *
+ * Stored figures are deliberately large (up to 2048px), and a tool response
+ * carrying eight of them base64-encoded is several megabytes on a transport
+ * that has to buffer the whole thing. These bound it: the rest of the results
+ * still carry their Markdown image link, so nothing is hidden — it just isn't
+ * inlined.
+ */
+export const MAX_INLINE_FIGURE_IMAGES = 4;
+export const MAX_INLINE_FIGURE_BYTES = 1_500_000;
+
+/**
  * Figures per embedding request. Derived from two `gemini-embedding-2` API
  * limits, not a throughput knob — raising it to save round trips reintroduces
  * a hard failure:
