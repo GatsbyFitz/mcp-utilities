@@ -14,8 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "MCP Apps Minimal Next.js",
-  description: "Minimal MCP Apps starter with Next.js",
+  title: "MCP Utilities \u2014 Regulatory Knowledge Base",
+  description:
+    "Ingest regulatory PDFs into a vector index and a knowledge graph, and serve both to LLM clients over MCP.",
 };
 
 export default function RootLayout({
