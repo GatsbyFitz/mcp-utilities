@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "MCP Utilities \u2014 Regulatory Knowledge Base",
+  title: "MCP Utilities \u2014 Knowledge Base",
   description:
     "Ingest regulatory PDFs into a vector index and a knowledge graph, and serve both to LLM clients over MCP.",
 };
