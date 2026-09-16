@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMcpApp } from "@/app/hooks/use-mcp-app";
 
 // ---------------------------------------------------------------------------
@@ -43,7 +43,11 @@ const sans = "var(--font-sans, ui-sans-serif, system-ui, sans-serif)";
 export default function ProcessViewer() {
   const { connected, toolResult } = useMcpApp();
   const result = (toolResult ?? {}) as ToolResult;
-  const figures = result.figures ?? [];
+  // Memoised on the array the bridge hands over, not rebuilt per render: the
+  // effect below depends on it, and a fresh `[]` each render would re-run that
+  // effect every time — resetting `zoomed` immediately after every click, so
+  // the zoom toggle would never appear to work.
+  const figures = useMemo(() => result.figures ?? [], [result.figures]);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [zoomed, setZoomed] = useState(false);
