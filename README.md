@@ -175,6 +175,8 @@ Both destinations are offered because they answer different questions — the PN
 
 **The page anchor lives on the result line, not in Sources**, because `sourceList` is deduplicated per document and two results from one PDF want different pages. Document-level links there are unchanged.
 
+The rendering guarantees the links exist; the tool description is what gets them quoted. It tells the model to put the image or link **directly into its reply** rather than describing it, and gives the reason plainly: *tool results are not shown to the user automatically; only what you write in your reply is visible to them.* That sentence is the one doing the work — a model that knows the tool output is invisible downstream has a reason to carry it forward, where "show the image" on its own reads as a style preference it can reasonably ignore.
+
 **`pnpm verify:multimodal` checks the image is really reaching the model.** If `content` is dropped anywhere in transit the call still succeeds and still returns a 1536-dimension vector — it has simply never seen the image, and nothing throws or logs. That is not a breakage: `values` still carries the description, so figures stay retrievable, cited and displayed. What it decides is whether you are getting the multimodal upgrade you are paying request payload for, and it stops "multimodal didn't help on this corpus" being concluded about a path that was never switched on.
 
 [The script](scripts/verify-multimodal-embedding.mjs) runs in two stages because there are two places it can be lost and the fix differs. Stage A stubs `fetch` and asserts what the SDK *would* send — offline, no credentials, and it doubles as the only guard on the image-per-request batching, which is invisible from the call site. Stage B needs `AI_GATEWAY_API_KEY` and embeds one description with and without an image, failing if the vectors match; it skips cleanly without a key. If Stage B fails, setting `GOOGLE_GENERATIVE_AI_API_KEY` routes this one call through `@ai-sdk/google` directly and removes the gateway hop entirely.
@@ -243,7 +245,18 @@ The two search tools together implement two complementary retrieval strategies o
 
 ### MCP Apps (interactive UI)
 
-The server has infrastructure for MCP Apps (tools paired with an interactive HTML UI resource rendered inside the client) via `app/mcp/apps/get-time-app.ts`, but `registerGetTimeApp` is **not currently wired into `registerAllTools`** — it exists as a reference implementation, not an active feature.
+`display_process` is an MCP App: a tool paired with an HTML resource that the host renders in a sandboxed iframe beside the conversation.
+
+It exists because a process diagram is the one search result a chat transcript serves badly. `search_docs` already returns figures, but as a downscaled image plus a description — fine for the model, poor for a person trying to follow who notifies whom, and there is nowhere in a message to zoom a 2048px flowchart. The viewer ([app/process/page.tsx](app/process/page.tsx)) gives a fit/full-resolution toggle, thumbnails when a query matches several figures, the description that was embedded with each, and links to the crop and to the source page.
+
+Search is semantic over figures only — the same query embedding `search_docs` uses, filtered to `kind = 'figure'`. Figures share the index and the vector space with text chunks, which is what made them additive in the first place, so that filter is the only thing separating them.
+
+**The tool still works without any of this.** It returns `content` and `structuredContent` that stand alone, rendered exactly as `search_docs` renders a figure, so a host that ignores `_meta.ui` gets a normal answer and loses only the viewer.
+
+Two constraints worth knowing before adding another App:
+
+- **The iframe has no session cookie**, so it cannot call this app's authenticated `/api/**` routes. Everything the UI renders arrives in `structuredContent`. Anything it loads directly — the figure PNGs — must be in the resource's CSP `resourceDomains`, or it fails silently as an empty frame rather than erroring.
+- **Register with `server.registerTool`/`registerResource`, not the `registerAppTool`/`registerAppResource` helpers.** Those are typed against the older `@modelcontextprotocol/sdk` server and take a `RequestHandlerExtra` where this repo's `@modelcontextprotocol/server` v2 passes a `ServerContext` — structurally incompatible, and this is why the previous `get_time_app` reference implementation sat commented out. The helpers only default the MIME type, so nothing is lost; `RESOURCE_MIME_TYPE` is still imported from the package, since that string has to be exact.
 
 ## Local development
 
