@@ -2,11 +2,13 @@ import { createMcpHandler } from "mcp-handler";
 import { registerAllTools } from "./tools";
 import { registerAllPrompts } from "./prompts";
 import { registerAllResources } from "./resources";
+import { registerAllApps } from "./apps";
 
 const baseHandler = createMcpHandler((server) => {
   registerAllTools(server);
   registerAllPrompts(server);
   registerAllResources(server);
+  registerAllApps(server);
 });
 
 async function handler(req: Request) {

@@ -245,7 +245,18 @@ The two search tools together implement two complementary retrieval strategies o
 
 ### MCP Apps (interactive UI)
 
-The server has infrastructure for MCP Apps (tools paired with an interactive HTML UI resource rendered inside the client) via `app/mcp/apps/get-time-app.ts`, but `registerGetTimeApp` is **not currently wired into `registerAllTools`** — it exists as a reference implementation, not an active feature.
+`display_process` is an MCP App: a tool paired with an HTML resource that the host renders in a sandboxed iframe beside the conversation.
+
+It exists because a process diagram is the one search result a chat transcript serves badly. `search_docs` already returns figures, but as a downscaled image plus a description — fine for the model, poor for a person trying to follow who notifies whom, and there is nowhere in a message to zoom a 2048px flowchart. The viewer ([app/process/page.tsx](app/process/page.tsx)) gives a fit/full-resolution toggle, thumbnails when a query matches several figures, the description that was embedded with each, and links to the crop and to the source page.
+
+Search is semantic over figures only — the same query embedding `search_docs` uses, filtered to `kind = 'figure'`. Figures share the index and the vector space with text chunks, which is what made them additive in the first place, so that filter is the only thing separating them.
+
+**The tool still works without any of this.** It returns `content` and `structuredContent` that stand alone, rendered exactly as `search_docs` renders a figure, so a host that ignores `_meta.ui` gets a normal answer and loses only the viewer.
+
+Two constraints worth knowing before adding another App:
+
+- **The iframe has no session cookie**, so it cannot call this app's authenticated `/api/**` routes. Everything the UI renders arrives in `structuredContent`. Anything it loads directly — the figure PNGs — must be in the resource's CSP `resourceDomains`, or it fails silently as an empty frame rather than erroring.
+- **Register with `server.registerTool`/`registerResource`, not the `registerAppTool`/`registerAppResource` helpers.** Those are typed against the older `@modelcontextprotocol/sdk` server and take a `RequestHandlerExtra` where this repo's `@modelcontextprotocol/server` v2 passes a `ServerContext` — structurally incompatible, and this is why the previous `get_time_app` reference implementation sat commented out. The helpers only default the MIME type, so nothing is lost; `RESOURCE_MIME_TYPE` is still imported from the package, since that string has to be exact.
 
 ## Local development
 
