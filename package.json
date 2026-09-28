@@ -16,6 +16,7 @@
     "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@modelcontextprotocol/server": "2.0.0",
     "@neondatabase/serverless": "^1.1.0",
+    "@notionhq/client": "^5.26.0",
     "@tailwindcss/postcss": "^4.3.2",
     "@upstash/vector": "^1.2.3",
     "@vercel/blob": "^2.6.1",

@@ -42,6 +42,7 @@
 - ✓ Rebuild a document's graph without re-embedding it (`POST /api/reextractGraph`)
 - ✓ Figure extraction: PNGs cropped from the page, described, and embedded multimodally into the existing index (`lib/figures.ts`, `extractFigures`/`embedFigures`, `POST /api/extractFigures`)
 - ✓ Scan Blob for parsed Markdown with no document behind it, for runs stranded before anything tracked them (`GET/POST /api/strandedMarkdown`, [lib/strandedMarkdown.ts](lib/strandedMarkdown.ts))
+- ✓ Compliance tracker synced from Notion into all three stores, with `search_compliance` for the counts and totals vector search cannot do (`db/compliance_actions.sql`, `POST /api/syncCompliance`)
 - ✓ `display_process` MCP App — process diagrams in a zoomable viewer rendered in the client, semantic search over figures only ([app/mcp/apps/display-process.ts](app/mcp/apps/display-process.ts), [app/process/page.tsx](app/process/page.tsx))
 - ✓ Split oversized tables on row boundaries at ingestion, repeating the header, so one 400-row table is no longer a single ~58,000-character chunk (`splitTableRows` in [lib/chunking.ts](lib/chunking.ts)) — needs a full re-ingest, since chunk IDs move
 - ✓ Ignore logos, watermarks and page furniture during figure extraction (`isDecorative`/`MIN_FIGURE_AREA`)

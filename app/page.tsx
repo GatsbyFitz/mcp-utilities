@@ -2,7 +2,7 @@
 
 import { Fragment, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon, PlayCircle, FileSearch } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon, PlayCircle, FileSearch, Scale } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { upload } from "@vercel/blob/client";
 import {
@@ -142,6 +142,7 @@ export default function UploadPage() {
   const [stranded, setStranded] = useState<StrandedMarkdown[] | null>(null);
   const [scanningMarkdown, setScanningMarkdown] = useState(false);
   const [restartingName, setRestartingName] = useState<string | null>(null);
+  const [syncingCompliance, setSyncingCompliance] = useState(false);
 
   // Both a browser upload and an approved document request start ingestion
   // runs the same way, so both feed the same tracker.
@@ -408,6 +409,34 @@ export default function UploadPage() {
       });
     } finally {
       setRestartingName(null);
+    }
+  }
+
+  // Pulls the Notion Compliance Tracker into all three stores. Unlike an
+  // ingestion this is one request rather than a workflow — the tracker is tens
+  // of rows, so it is a single embed, one graph write and one bulk upsert.
+  async function handleSyncCompliance() {
+    setSyncingCompliance(true);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/syncCompliance", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Compliance sync failed: ${res.status}`);
+      }
+      setActionMessage({
+        text:
+          `Synced ${data.synced} enforcement action(s)` +
+          `${data.deleted ? `, removed ${data.deleted} no longer in Notion` : ""}.`,
+        error: false,
+      });
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Compliance sync failed",
+        error: true,
+      });
+    } finally {
+      setSyncingCompliance(false);
     }
   }
 
@@ -1288,6 +1317,16 @@ export default function UploadPage() {
                 <Share2 />
                 Knowledge graph
               </Link>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleSyncCompliance}
+                disabled={syncingCompliance}
+                title="Pulls the Notion compliance tracker into the index, the graph and the enforcement table"
+              >
+                <Scale className={syncingCompliance ? "animate-spin" : ""} />
+                {syncingCompliance ? "Syncing..." : "Sync compliance"}
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
