@@ -8,7 +8,8 @@
     "start": "next start",
     "type-check": "tsc --noEmit",
     "lint": "eslint .",
-    "verify:multimodal": "node --env-file=.env.local scripts/verify-multimodal-embedding.mjs"
+    "verify:multimodal": "node --env-file=.env.local scripts/verify-multimodal-embedding.mjs",
+    "verify:sync-errors": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-sync-errors.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.10",

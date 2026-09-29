@@ -4,6 +4,7 @@ import { Client, isFullPage } from "@notionhq/client";
 import { embedMany } from "ai";
 import { vectorIndex, escapeFilterValue } from "@/lib/vector";
 import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/embedding";
+import { sparseVector } from "@/lib/sparse";
 import { replaceDocumentGraph } from "../upload/steps/extractGraph";
 import {
   COMPLIANCE_KIND,
@@ -12,6 +13,7 @@ import {
   type ComplianceAction,
 } from "@/lib/compliance";
 import { replaceActions } from "@/lib/complianceStore";
+import { describeSyncError, type SyncStage } from "@/lib/syncErrors";
 import {
   embeddableText,
   schemaProblems,
@@ -56,6 +58,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Which phase we are in, so a failure says where it happened. Without this
+  // the same sentence covered Notion, the gateway, three stores and our own
+  // table, and telling them apart meant querying each store by hand.
+  let stage: SyncStage = "notion";
+
   try {
     const actions = await fetchActions(notionToken, sourceId);
 
@@ -73,25 +80,41 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    await indexActions(actions);
-    await writeGraphFor(actions);
+    stage = "embeddings";
+    const embeddings = await embedActions(actions);
+
+    stage = "vectors";
+    await upsertActions(actions, embeddings);
+
+    const graph = buildGraph(actions);
+
+    stage = "embeddings";
+    const entityEmbeddings = await embedEntities(graph.names, graph.entityTypes);
+
+    stage = "graph";
+    await replaceDocumentGraph(
+      COMPLIANCE_SOURCE_DOC,
+      graph.names.map((name, i) => ({
+        name,
+        type: graph.entityTypes.get(name) ?? null,
+        embedding: entityEmbeddings[i],
+      })),
+      graph.relations
+    );
 
     // Postgres last, deliberately. If embedding or the graph write fails, the
     // previous rows and their `synced_at` still stand, and the tool keeps
     // answering from the last good sync instead of from a half-written one.
+    stage = "database";
     const { synced, deleted } = await replaceActions(actions);
 
     return NextResponse.json({ success: true, synced, deleted });
   } catch (error) {
-    console.error("[syncCompliance] POST failed:", error);
-    const message = error instanceof Error ? error.message : "Unknown error";
-    // The schema mismatch is the one failure worth surfacing verbatim: it
-    // names the property that changed, and no one can act on "sync failed".
-    const isSchema = message.startsWith("Compliance Tracker schema");
-    return NextResponse.json(
-      { success: false, error: isSchema ? message : "Could not sync the compliance tracker" },
-      { status: 500 }
-    );
+    console.error(`[syncCompliance] POST failed during ${stage}:`, error);
+    // A provider that diagnosed itself gets quoted rather than replaced. See
+    // lib/syncErrors.ts for why this route returns detail where others do not.
+    const { status, error: message, detail } = describeSyncError(stage, error);
+    return NextResponse.json({ success: false, stage, error: message, detail }, { status });
   }
 }
 
@@ -144,7 +167,7 @@ async function fetchActions(notionToken: string, sourceId: string): Promise<Comp
  * `blobUrl` carries the regulator's own page, so `toCitation` links citations
  * there with no change to lib/citations.ts — the same trick figures used.
  */
-async function indexActions(actions: ComplianceAction[]): Promise<void> {
+async function embedActions(actions: ComplianceAction[]): Promise<number[][]> {
   const { embeddings } = await embedMany({
     model: EMBEDDING_MODEL,
     values: actions.map((action) => `title: ${COMPLIANCE_SOURCE_DOC} | text: ${embeddableText(action)}`),
@@ -153,6 +176,20 @@ async function indexActions(actions: ComplianceAction[]): Promise<void> {
     },
   });
 
+  return embeddings;
+}
+
+/**
+ * Upstash: swap in the freshly embedded set.
+ *
+ * Split from the embedding call above so a failure says which of the two it
+ * was. They fail for entirely different reasons and are fixed in entirely
+ * different places.
+ */
+async function upsertActions(
+  actions: ComplianceAction[],
+  embeddings: number[][]
+): Promise<void> {
   // Clear first so an action deleted in Notion does not survive as a vector
   // with nothing behind it. Scoped by `kind`, so chunks and figures are
   // untouched.
@@ -164,6 +201,12 @@ async function indexActions(actions: ComplianceAction[]): Promise<void> {
     actions.map((action, i) => ({
       id: complianceId(action.pageId),
       vector: embeddings[i],
+      // The index is hybrid, so a dense vector alone is rejected outright
+      // ("This index requires sparse vectors") and nothing is written. Built
+      // from the unprefixed text, exactly as createEmbeddings and embedFigures
+      // do — lib/sparse.ts has to tokenize the document side and the query
+      // side identically or term overlap silently stops matching.
+      sparseVector: sparseVector(embeddableText(action)),
       metadata: {
         text: action.summary,
         title: COMPLIANCE_SOURCE_DOC,
@@ -191,7 +234,18 @@ async function indexActions(actions: ComplianceAction[]): Promise<void> {
  * on the next. These columns are already a closed vocabulary, so the edge
  * types are consistent by construction and cannot fragment.
  */
-async function writeGraphFor(actions: ComplianceAction[]): Promise<void> {
+function buildGraph(actions: ComplianceAction[]): {
+  names: string[];
+  entityTypes: Map<string, string>;
+  relations: {
+    source: string;
+    relType: string;
+    description: string;
+    target: string;
+    chunkId: string;
+    sourceDoc: string;
+  }[];
+} {
   const entityTypes = new Map<string, string>();
   const relations: {
     source: string;
@@ -244,27 +298,28 @@ async function writeGraphFor(actions: ComplianceAction[]): Promise<void> {
     }
   }
 
-  const names = [...entityTypes.keys()];
-  if (names.length === 0) {
-    await replaceDocumentGraph(COMPLIANCE_SOURCE_DOC, [], []);
-    return;
-  }
+  return { names: [...entityTypes.keys()], entityTypes, relations };
+}
 
-  // Same asymmetric convention as extractGraph: document-side here, query-side
-  // in search_graph. Both must agree or the entity_names index stops matching.
+/**
+ * Entity-name embeddings for the `entity_names` index.
+ *
+ * Same asymmetric convention as extractGraph: document-side here, query-side
+ * in search_graph. Both must agree or the entity_names index stops matching.
+ */
+async function embedEntities(
+  names: string[],
+  entityTypes: Map<string, string>
+): Promise<number[][]> {
+  // An empty tracker still has to reach replaceDocumentGraph, which clears the
+  // previous edges. Embedding nothing is what would fail here, not the write.
+  if (names.length === 0) return [];
+
   const { embeddings } = await embedMany({
     model: EMBEDDING_MODEL,
     values: names.map((name) => `entity: ${name} | type: ${entityTypes.get(name)}`),
     providerOptions: { google: { outputDimensionality: EMBEDDING_DIMENSIONS } },
   });
 
-  await replaceDocumentGraph(
-    COMPLIANCE_SOURCE_DOC,
-    names.map((name, i) => ({
-      name,
-      type: entityTypes.get(name) ?? null,
-      embedding: embeddings[i],
-    })),
-    relations
-  );
+  return embeddings;
 }

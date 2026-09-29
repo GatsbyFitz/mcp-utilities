@@ -44,8 +44,26 @@ export async function GET(req: NextRequest) {
       console.warn("[returnKnowledgeBase] figure counts unavailable:", error);
     }
 
+    // Totals for the header strip. Derived from the rows already fetched and
+    // the figure counts already read, so the summary costs no extra round trip
+    // and cannot disagree with the table printed underneath it.
+    //
+    // `sizeBytes` is the PDF as uploaded — not the converted Markdown, which
+    // lives in Blob and is not measured here. The label says so.
+    const stats = {
+      documents: rows.length,
+      chunks: rows.reduce((total, row) => total + (Number(row.chunks) || 0), 0),
+      pdfBytes: rows.reduce((total, row) => total + (Number(row.size_bytes) || 0), 0),
+      // Null, not zero, when the index could not be counted — the same
+      // distinction the per-row figure count makes.
+      figures: figures
+        ? rows.reduce((total, row) => total + (figures.get(row.name) ?? 0), 0)
+        : null,
+    };
+
     return NextResponse.json({
       success: true,
+      stats,
       items: rows.map((row) => ({
         id: row.id,
         name: row.name,
