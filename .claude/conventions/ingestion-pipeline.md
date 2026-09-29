@@ -18,6 +18,8 @@ Retry semantics come from the error type: throw `FatalError` from `workflow` to 
 
 Always `google/gemini-embedding-2` at `outputDimensionality: 1536`, matching the Upstash index and the Neo4j `entity_names` vector index. The convention is asymmetric: documents embed with `taskType: "RETRIEVAL_DOCUMENT"` and prefix `title: … | text: …`; queries embed with `taskType: "RETRIEVAL_QUERY"` and prefix `task: search result | query: …`. Keep both sides in sync.
 
+**The Upstash index is hybrid, so every upsert must carry a `sparseVector` as well as a dense `vector`.** Upstash rejects a dense-only write outright — `UpstashError: This index requires sparse vectors` — and nothing is indexed. Build it with `sparseVector()` from [lib/sparse.ts](../../lib/sparse.ts), never by hand: it is the single source of truth for tokenisation, and the document side and the query side must tokenize identically or term overlap silently stops matching. Note the asymmetry with the dense side — **sparse takes the plain text, without the `title: … | text: …` prefix**. Every writer follows this: `createEmbeddings` (the contextualized chunk), `embedFigures` (the figure description), `syncCompliance` (the action's `embeddableText`), and `search_docs` on the query side. A new writer that forgets it does not degrade — it fails completely.
+
 ## Graph shape
 
 `extractGraph` writes exactly what `search_graph` reads: `(:Entity {name, type, embedding})` joined by `[:RELATES {type, description, chunkId, sourceDoc}]`. Writes are idempotent per document — `replaceDocumentGraph` deletes that document's edges, MERGEs entities (shared across documents), recreates edges, then prunes orphaned entities. Entities with no edges are never persisted, since `search_graph`'s `MATCH` can't reach them.

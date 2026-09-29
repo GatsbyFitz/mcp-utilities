@@ -102,6 +102,27 @@ export interface FigureBox {
 export const FIGURE_BOX_PADDING = 15;
 
 /**
+ * Extra margin as a share of the box's own span, on top of the flat floor.
+ *
+ * The model bounds what it *sees as* the figure — the blocks, their labels and
+ * the caption — and misses the thin routing lines a flowchart sends around the
+ * outside of that layout. Measured on the AEMO exemption life cycle (p6 of
+ * metering-installation-exemption-guideline-cleanv10.pdf): the reported box was
+ * 404 units wide where the diagram really spans 453, so 24.5 units per side
+ * were missing and the flat 15 recovered only part of it. The loop-back arrows
+ * — SEND FOR REVIEW, REQUEST TO EXTEND — were sliced off at both edges.
+ *
+ * Proportional rather than a bigger flat number so a small figure is not
+ * swallowed by its own margin: 8% of a 404-unit box is 32 units, while 8% of a
+ * 60-unit box is under the floor and the floor wins.
+ *
+ * The asymmetry of the trade-off is the whole argument, and the extraction
+ * prompt already states it: a box that is too small loses part of the diagram
+ * permanently, a box that is too large only includes some whitespace.
+ */
+export const FIGURE_BOX_PADDING_RATIO = 0.08;
+
+/**
  * Smallest share of a page a real figure covers, as a fraction of its area.
  *
  * This is the backstop behind the prompt, for page furniture the model reports
@@ -171,11 +192,16 @@ export function usableBox(figure: {
   // Below about 5% of a side the crop is almost certainly a misfire.
   if (x1 - x0 < 50 || y1 - y0 < 50) return null;
 
+  // Padding is applied per axis from that axis's own span, so a wide, short
+  // diagram is not padded vertically by its width.
+  const padX = Math.max(FIGURE_BOX_PADDING, (x1 - x0) * FIGURE_BOX_PADDING_RATIO);
+  const padY = Math.max(FIGURE_BOX_PADDING, (y1 - y0) * FIGURE_BOX_PADDING_RATIO);
+
   return {
-    x0: Math.max(0, x0 - FIGURE_BOX_PADDING),
-    y0: Math.max(0, y0 - FIGURE_BOX_PADDING),
-    x1: Math.min(1000, x1 + FIGURE_BOX_PADDING),
-    y1: Math.min(1000, y1 + FIGURE_BOX_PADDING),
+    x0: Math.max(0, x0 - padX),
+    y0: Math.max(0, y0 - padY),
+    x1: Math.min(1000, x1 + padX),
+    y1: Math.min(1000, y1 + padY),
   };
 }
 

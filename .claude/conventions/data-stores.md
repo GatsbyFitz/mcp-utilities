@@ -7,7 +7,7 @@ A Next.js 15 App Router app with two halves that share this one storage layer:
 
 | Store | Accessor | Notes |
 | --- | --- | --- |
-| Upstash Vector | `vectorIndex` in [lib/vector.ts](../../lib/vector.ts) | chunk text + citation metadata |
+| Upstash Vector | `vectorIndex` in [lib/vector.ts](../../lib/vector.ts) | chunk text + citation metadata. **Hybrid index** — every upsert needs a `sparseVector` from [lib/sparse.ts](../../lib/sparse.ts) or it is rejected outright; see [ingestion-pipeline.md](ingestion-pipeline.md#embeddings) |
 | Neo4j Aura | `readGraph`/`writeGraph`/`withSession` in [lib/graph.ts](../../lib/graph.ts) | driver is a lazily-built `globalThis` singleton, built on first query rather than at import so a config error doesn't take down every workflow step in the route |
 | Neon Postgres | `sql` in [lib/db.ts](../../lib/db.ts) | `uploads` (read back by `GET /api/returnKnowledgeBase`), `document_requests`, `ingestion_runs`, `compliance_actions` |
 | Notion | `@notionhq/client` in [app/api/syncCompliance/route.ts](../../app/api/syncCompliance/route.ts) | source of the Compliance Tracker; read on demand, never at query time |
@@ -25,6 +25,10 @@ No table and no index is created by code in this repo — `uploads`, `document_r
 **Postgres is written last, deliberately.** If the embedding or graph write fails, the previous rows and their `synced_at` still stand, so the tool keeps answering from the last good sync rather than from a half-written one. An empty read from Notion is refused outright rather than treated as a successful sync — wiping the table would answer "no, they have never been fined".
 
 **The graph is built from the columns, with no model call.** That is the one place this data beats the PDF path: `extractGraph` must read prose to find relationships, which is where its free-form relation types come from, while these columns are already a closed vocabulary — so `PENALISED_BY` and `COMMITTED` are consistent by construction and cannot fragment.
+
+**The sync reports which stage failed.** `POST /api/syncCompliance` writes four upstream systems in sequence, and for a while reported every failure of any of them as the same sentence. Finding out that the compliance upsert was sending no sparse vector took a bisection across all three stores — while Upstash had said so exactly, and the route had discarded it. So the response now carries a `stage` (`notion`/`embeddings`/`vectors`/`graph`/`database`) and quotes a provider that diagnosed itself, classified by `describeSyncError` in [lib/syncErrors.ts](../../lib/syncErrors.ts) and checked offline by `pnpm verify:sync-errors`.
+
+This is a deliberate, scoped exception to the [api-routes rule](../rules/api-routes.md) that a handler returns a generic message. That rule protects a browser from connection strings and credentials; this route is gated by `getToken` and `middleware.ts`, so its only reader is the operator, who can already see the logs. `redact()` is the backstop that keeps the exception honest. Do not "fix" this back to a generic string.
 
 Notion property names are asserted before mapping, once per sync. A renamed or retyped property affects every row identically, so the choice is between one loud error and a whole column silently reading as null — which downstream looks like "this action had no regulator" rather than "we failed to read it". `Regulatory Body` is exactly the property that invites this: it renders as "Regula…" in a narrow Notion column.
 

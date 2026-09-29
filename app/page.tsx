@@ -55,8 +55,20 @@ type KnowledgeBaseItem = {
   figures: number | null;
 };
 
+// Totals for the header strip, computed server-side from the same rows the
+// table below is drawn from, so the two can never disagree.
+type KnowledgeBaseStats = {
+  documents: number;
+  chunks: number;
+  /** The uploaded PDFs, not the converted Markdown. Labelled as such. */
+  pdfBytes: number;
+  /** Null when the vector index could not be counted, which is not zero. */
+  figures: number | null;
+};
+
 type KnowledgeBase = {
   success: boolean;
+  stats?: KnowledgeBaseStats;
   items: KnowledgeBaseItem[];
 };
 
@@ -84,6 +96,34 @@ function formatBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB"];
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${(bytes / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+/**
+ * The sync route reports which stage failed and the provider's own code, so
+ * show both. "Could not sync the compliance tracker" once cost a bisection
+ * across all three stores to turn into "the index requires sparse vectors".
+ */
+function syncErrorText(
+  data: { error?: string; stage?: string; detail?: { code?: unknown } } | null,
+  status: number
+): string {
+  if (!data) {
+    return `Compliance sync failed (HTTP ${status}) \u2014 the server did not return JSON.`;
+  }
+  const message = data.error ?? `Compliance sync failed: ${status}`;
+  const where = [data.stage, typeof data.detail?.code === "string" ? data.detail.code : null]
+    .filter(Boolean)
+    .join(" \u00b7 ");
+  return where ? `${message} [${where}]` : message;
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xl font-semibold tabular-nums">{value}</div>
+      <div className="text-xs text-muted-foreground">{label}</div>
+    </div>
+  );
 }
 
 function formatDate(iso: string): string {
@@ -420,9 +460,12 @@ export default function UploadPage() {
     setActionMessage(null);
     try {
       const res = await fetch("/api/syncCompliance", { method: "POST" });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.error ?? `Compliance sync failed: ${res.status}`);
+      // A platform-level failure (a timeout, a crash) returns an HTML page
+      // rather than JSON. Parsing it would throw and replace the status code,
+      // which in that case is the only thing the response actually tells us.
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.success) {
+        throw new Error(syncErrorText(data, res.status));
       }
       setActionMessage({
         text:
@@ -1368,6 +1411,23 @@ export default function UploadPage() {
             </CardAction>
           </CardHeader>
           <CardContent>
+            {knowledgeBase?.stats && (
+              <div className="mb-4 grid grid-cols-2 gap-4 rounded-lg border p-4 sm:grid-cols-4">
+                <Stat label="Documents" value={knowledgeBase.stats.documents.toLocaleString()} />
+                <Stat label="Chunks" value={knowledgeBase.stats.chunks.toLocaleString()} />
+                {/* An em dash rather than 0: the index could not be counted,
+                    which is a different fact from there being no figures. */}
+                <Stat
+                  label="Figures"
+                  value={
+                    knowledgeBase.stats.figures === null
+                      ? "\u2014"
+                      : knowledgeBase.stats.figures.toLocaleString()
+                  }
+                />
+                <Stat label="PDF size" value={formatBytes(knowledgeBase.stats.pdfBytes)} />
+              </div>
+            )}
             {actionMessage && (
               <p className={`mb-3 text-sm ${actionMessage.error ? "text-red-400" : "text-green-400"}`}>
                 {actionMessage.text}
