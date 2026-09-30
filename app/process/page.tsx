@@ -8,13 +8,29 @@ import { useMcpApp } from "@/app/hooks/use-mcp-app";
 // ---------------------------------------------------------------------------
 // Rendered inside the host's iframe. Everything it shows arrives through the
 // MCP bridge as the tool's `structuredContent` — the iframe carries no session
-// cookie, so it cannot call the app's own authenticated routes, and the only
-// thing it loads over the network is the figure images themselves.
+// cookie, so it cannot call the app's own authenticated routes.
+//
+// It prefers a transcribed process to the figure it came from: a Mermaid
+// flowchart is legible, selectable and scales, where the crop is a picture of
+// one. The crop stays one click away, because a transcription is a claim about
+// the diagram and the diagram is the evidence.
 //
 // Styling is inline and driven by the host's CSS variables rather than by this
 // app's Tailwind theme, so the viewer takes on the surrounding conversation's
-// colours and fonts instead of looking like a pasted-in web page. Every
-// variable has a fallback, because a host that sets none must still be legible.
+// colours and fonts. Every variable has a fallback, because a host that sets
+// none must still be legible.
+
+interface ProcessDiagram {
+  id: string;
+  title: string;
+  document: string;
+  page: number | null;
+  mermaid: string;
+  mermaidValid: boolean;
+  actors: string[];
+  imageUrl: string | null;
+  sourceUrl: string | null;
+}
 
 interface ProcessFigure {
   id: string;
@@ -24,12 +40,12 @@ interface ProcessFigure {
   description: string;
   imageUrl: string;
   sourceUrl: string | null;
-  score: number;
 }
 
 interface ToolResult {
   query?: string;
   document?: string | null;
+  processes?: ProcessDiagram[];
   figures?: ProcessFigure[];
 }
 
@@ -43,50 +59,217 @@ const sans = "var(--font-sans, ui-sans-serif, system-ui, sans-serif)";
 export default function ProcessViewer() {
   const { connected, toolResult } = useMcpApp();
   const result = (toolResult ?? {}) as ToolResult;
-  // Memoised on the array the bridge hands over, not rebuilt per render: the
-  // effect below depends on it, and a fresh `[]` each render would re-run that
-  // effect every time — resetting `zoomed` immediately after every click, so
-  // the zoom toggle would never appear to work.
+  // Memoised on the arrays the bridge hands over, not rebuilt per render: the
+  // effects below depend on them, and a fresh `[]` each render would re-run
+  // those effects every time — which is what once made the zoom toggle appear
+  // not to work at all.
+  const processes = useMemo(() => result.processes ?? [], [result.processes]);
   const figures = useMemo(() => result.figures ?? [], [result.figures]);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [zoomed, setZoomed] = useState(false);
 
-  // Follow the result rather than the selection: a second call replaces the
-  // figures, and a stale id would leave the viewer blank with no explanation.
+  // Follow the result rather than the selection: a second call replaces
+  // everything, and a stale id would leave the viewer blank with no explanation.
   useEffect(() => {
-    setSelectedId((current) =>
-      current && figures.some((f) => f.id === current) ? current : (figures[0]?.id ?? null)
-    );
-    setZoomed(false);
-  }, [figures]);
+    const ids = [...processes.map((p) => p.id), ...figures.map((f) => f.id)];
+    setSelectedId((current) => (current && ids.includes(current) ? current : (ids[0] ?? null)));
+  }, [processes, figures]);
 
-  const selected = figures.find((f) => f.id === selectedId) ?? figures[0] ?? null;
+  const process =
+    processes.find((p) => p.id === selectedId) ?? (figures.length === 0 ? processes[0] : null) ?? null;
+  const figure =
+    figures.find((f) => f.id === selectedId) ?? (processes.length === 0 ? figures[0] : null) ?? null;
 
-  if (!selected) {
+  if (!process && !figure) {
     return (
       <main style={{ fontFamily: sans, color: muted, padding: 24, fontSize: 14 }}>
         {connected
-          ? `No figures to display${result.query ? ` for “${result.query}”` : ""}.`
-          : "This viewer runs inside an MCP host. Call display_process to open it with a process diagram."}
+          ? `No process to display${result.query ? ` for “${result.query}”` : ""}.`
+          : "This viewer runs inside an MCP host. Call display_process to open it with a process."}
       </main>
     );
   }
 
+  const heading = process ?? figure!;
+  const total = processes.length + figures.length;
+
   return (
     <main style={{ fontFamily: sans, color: text, padding: 16, display: "grid", gap: 12 }}>
       <header style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
-        <h1 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>{selected.title}</h1>
+        <h1 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>{heading.title}</h1>
         <span style={{ color: muted, fontSize: 13 }}>
-          {selected.page !== null ? `p. ${selected.page}` : "page unknown"}
-          {figures.length > 1 ? ` · ${figures.indexOf(selected) + 1} of ${figures.length}` : ""}
+          {heading.page !== null ? `p. ${heading.page}` : "page unknown"}
+          {total > 1 ? ` · ${total} results` : ""}
         </span>
       </header>
 
-      {/* The figure. Click to toggle between fitting the pane and rendering at
-          full width, which is the whole reason a viewer beats an inline image:
-          the stored crop is up to 2048px and a dense flowchart is unreadable
-          scaled down to a message column. */}
+      {process ? <Diagram process={process} /> : <FigureImage figure={figure!} />}
+
+      {total > 1 && (
+        <nav style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {[...processes, ...figures].map((item) => {
+            const active = item.id === selectedId;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setSelectedId(item.id)}
+                style={{
+                  all: "unset",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  padding: "4px 10px",
+                  borderRadius: radius,
+                  border: `1px solid ${active ? text : border}`,
+                  background: active ? surface : "transparent",
+                  color: active ? text : muted,
+                  maxWidth: 240,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={item.title}
+              >
+                {item.title}
+              </button>
+            );
+          })}
+        </nav>
+      )}
+    </main>
+  );
+}
+
+/**
+ * The transcribed process, rendered.
+ *
+ * `mermaid.parse` before `mermaid.render` so a diagram that cannot be drawn
+ * says so and shows the original crop instead. Without that the failure is an
+ * empty frame with nothing explaining it, which is the worst outcome available
+ * here — the reader cannot tell a broken transcription from a missing one.
+ */
+function Diagram({ process }: { process: ProcessDiagram }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [showSource, setShowSource] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSvg(null);
+    setFailed(false);
+
+    (async () => {
+      try {
+        // Dynamic so mermaid's weight lands on this route and nowhere else,
+        // and so it is never pulled into a server render.
+        const mermaid = (await import("mermaid")).default;
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: "neutral",
+          // The diagram is model output transcribed from someone's PDF, so it
+          // is not trusted input: strict makes mermaid sanitise labels rather
+          // than pass HTML through.
+          securityLevel: "strict",
+        });
+        await mermaid.parse(process.mermaid);
+        const id = `mmd-${process.id.replace(/[^a-zA-Z0-9]/g, "-")}`;
+        const rendered = await mermaid.render(id, process.mermaid);
+        if (!cancelled) setSvg(rendered.svg);
+      } catch (error) {
+        console.warn("[process] mermaid render failed:", error);
+        if (!cancelled) setFailed(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [process]);
+
+  return (
+    <>
+      {process.actors.length > 0 && (
+        <p style={{ margin: 0, fontSize: 13, color: muted }}>{process.actors.join(" · ")}</p>
+      )}
+
+      <div
+        style={{
+          background: surface,
+          border: `1px solid ${border}`,
+          borderRadius: radius,
+          padding: 12,
+          overflow: "auto",
+        }}
+      >
+        {svg ? (
+          // mermaid's own output, already sanitised by securityLevel: "strict".
+          <div dangerouslySetInnerHTML={{ __html: svg }} />
+        ) : failed ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            <p style={{ margin: 0, fontSize: 13, color: muted }}>
+              This process could not be drawn, so here is the original figure.
+            </p>
+            {process.imageUrl && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={process.imageUrl}
+                alt={process.title}
+                style={{ width: "100%", height: "auto" }}
+              />
+            )}
+          </div>
+        ) : (
+          <p style={{ margin: 0, fontSize: 13, color: muted }}>Drawing…</p>
+        )}
+      </div>
+
+      <p style={{ margin: 0, fontSize: 13, display: "flex", gap: 12, flexWrap: "wrap" }}>
+        <button
+          type="button"
+          onClick={() => setShowSource((v) => !v)}
+          style={{ all: "unset", cursor: "pointer", textDecoration: "underline" }}
+        >
+          {showSource ? "Hide Mermaid" : "Show Mermaid"}
+        </button>
+        {process.imageUrl && (
+          <a href={process.imageUrl} target="_blank" rel="noreferrer" style={{ color: "inherit" }}>
+            Original figure
+          </a>
+        )}
+        {process.sourceUrl && (
+          <a href={process.sourceUrl} target="_blank" rel="noreferrer" style={{ color: "inherit" }}>
+            {process.page !== null ? `Source page ${process.page}` : "Source document"}
+          </a>
+        )}
+      </p>
+
+      {showSource && (
+        <pre
+          style={{
+            margin: 0,
+            padding: 12,
+            background: surface,
+            border: `1px solid ${border}`,
+            borderRadius: radius,
+            fontSize: 12,
+            overflow: "auto",
+            whiteSpace: "pre",
+          }}
+        >
+          {process.mermaid}
+        </pre>
+      )}
+    </>
+  );
+}
+
+/** A figure with no transcribed process — what this viewer showed before. */
+function FigureImage({ figure }: { figure: ProcessFigure }) {
+  const [zoomed, setZoomed] = useState(false);
+  useEffect(() => setZoomed(false), [figure]);
+
+  return (
+    <>
       <button
         type="button"
         onClick={() => setZoomed((z) => !z)}
@@ -105,8 +288,8 @@ export default function ProcessViewer() {
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={selected.imageUrl}
-          alt={selected.description.slice(0, 200) || selected.title}
+          src={figure.imageUrl}
+          alt={figure.description.slice(0, 200) || figure.title}
           style={{
             display: "block",
             width: zoomed ? "auto" : "100%",
@@ -116,59 +299,20 @@ export default function ProcessViewer() {
         />
       </button>
 
-      {selected.description && (
-        <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: muted }}>
-          {selected.description}
-        </p>
+      {figure.description && (
+        <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: muted }}>{figure.description}</p>
       )}
 
       <p style={{ margin: 0, fontSize: 13, display: "flex", gap: 12, flexWrap: "wrap" }}>
-        <a href={selected.imageUrl} target="_blank" rel="noreferrer" style={{ color: "inherit" }}>
+        <a href={figure.imageUrl} target="_blank" rel="noreferrer" style={{ color: "inherit" }}>
           Open figure
         </a>
-        {selected.sourceUrl && (
-          <a href={selected.sourceUrl} target="_blank" rel="noreferrer" style={{ color: "inherit" }}>
-            {selected.page !== null ? `Source page ${selected.page}` : "Source document"}
+        {figure.sourceUrl && (
+          <a href={figure.sourceUrl} target="_blank" rel="noreferrer" style={{ color: "inherit" }}>
+            {figure.page !== null ? `Source page ${figure.page}` : "Source document"}
           </a>
         )}
       </p>
-
-      {/* Thumbnails only when there is a choice to make. */}
-      {figures.length > 1 && (
-        <nav style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4 }}>
-          {figures.map((figure) => {
-            const active = figure.id === selected.id;
-            return (
-              <button
-                key={figure.id}
-                type="button"
-                onClick={() => {
-                  setSelectedId(figure.id);
-                  setZoomed(false);
-                }}
-                title={`${figure.title}${figure.page !== null ? ` — p. ${figure.page}` : ""}`}
-                style={{
-                  all: "unset",
-                  cursor: "pointer",
-                  flex: "0 0 auto",
-                  borderRadius: radius,
-                  border: `2px solid ${active ? text : border}`,
-                  opacity: active ? 1 : 0.65,
-                  background: surface,
-                  padding: 2,
-                }}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={figure.imageUrl}
-                  alt=""
-                  style={{ display: "block", width: 96, height: 64, objectFit: "cover", borderRadius: 4 }}
-                />
-              </button>
-            );
-          })}
-        </nav>
-      )}
-    </main>
+    </>
   );
 }

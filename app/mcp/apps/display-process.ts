@@ -5,6 +5,7 @@ import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps";
 import { baseURL } from "@/baseUrl";
 import { vectorIndex, escapeFilterValue } from "@/lib/vector";
 import { FIGURE_KIND } from "@/lib/figures";
+import { PROCESS_KIND } from "@/lib/processes";
 import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/embedding";
 import {
   toCitation,
@@ -45,7 +46,7 @@ import {
 // constant and the part that actually has to be right.
 
 /** Bump on every UI change — hosts cache a resource by its URI. */
-const resourceUri = "ui://display-process/mcp-app-v1.html";
+const resourceUri = "ui://display-process/mcp-app-v2.html";
 
 /** Figures per call. Enough to compare a few, few enough to stay navigable. */
 const MAX_PROCESSES = 12;
@@ -56,6 +57,28 @@ const MAX_PROCESSES = 12;
  * this the viewer renders empty frames and nothing says why.
  */
 const BLOB_IMAGE_ORIGIN = "https://*.public.blob.vercel-storage.com";
+
+/**
+ * A process read out of a figure, as Mermaid.
+ *
+ * The Mermaid is the point. A host renders it as a diagram, and — far more
+ * importantly — the model reads the source directly in the text block below, so
+ * "what happens if this is rejected?" is answerable from the arrows instead of
+ * from a sentence about a picture.
+ */
+interface ProcessDiagram {
+  id: string;
+  title: string;
+  document: string;
+  page: number | null;
+  mermaid: string;
+  /** False when the diagram failed validation; the viewer shows the crop. */
+  mermaidValid: boolean;
+  actors: string[];
+  imageUrl: string | null;
+  sourceUrl: string | null;
+  score: number;
+}
 
 interface ProcessFigure {
   id: string;
@@ -106,16 +129,20 @@ export function registerDisplayProcessApp(server: McpServer): void {
     {
       title: "Display process",
       description:
-        "Show process diagrams, flowcharts and other figures extracted from " +
-        "the indexed documents, in a viewer the reader can page through and " +
-        "zoom. Use this when the answer to a question IS a diagram — a " +
-        "process flow, a swimlane, a sequence of obligations between parties " +
-        "— rather than prose that mentions one. Search is semantic over the " +
-        "description embedded with each figure, so describe the process in " +
-        "words ('meter churn between retailer and metering coordinator'), " +
-        "not by figure number. Restrict to one document with `document` when " +
-        "the question names one. For prose, or for a mix of prose and " +
-        "figures, use search_docs instead.",
+        "Show a process from the indexed documents as a Mermaid flowchart you " +
+        "can read, plus the original diagram. Use this when the answer to a " +
+        "question IS a process — a flow, a lifecycle, a sequence of " +
+        "obligations between parties, what happens when something is rejected " +
+        "or approved — rather than prose that mentions one. The returned " +
+        "Mermaid is the transcribed diagram, so you can follow its arrows and " +
+        "answer questions about branches and loops directly from it; quote the " +
+        "step and condition labels as written. Search is semantic over the " +
+        "text on the diagram, so describe the process in words ('meter churn " +
+        "between retailer and metering coordinator'), not by figure number. " +
+        "Restrict to one document with `document` when the question names one. " +
+        "Documents that have not been scanned for processes fall back to the " +
+        "figure image. For prose, or a mix of prose and figures, use " +
+        "search_docs instead.",
       inputSchema: z.object({
         query: z.string().min(2).max(1000),
         document: z.string().max(300).optional(),
@@ -124,46 +151,67 @@ export function registerDisplayProcessApp(server: McpServer): void {
     },
     async ({ query, document }) => {
       try {
-        const figures = await findProcesses(query, document);
+        const diagrams = await findProcessDiagrams(query, document);
+        // Only when nothing has been transcribed: a document scanned for
+        // processes should not have its answer diluted by raw figures, but one
+        // that never has must still return what it has.
+        const figures = diagrams.length > 0 ? [] : await findProcesses(query, document);
 
-        if (figures.length === 0) {
+        if (diagrams.length === 0 && figures.length === 0) {
           const scope = document ? ` in ${document}` : "";
           return {
             content: [
               {
                 type: "text" as const,
                 text:
-                  `No extracted figures match "${query}"${scope}. Figures exist ` +
-                  `only for documents that have had figure extraction run, so ` +
-                  `the process may be described in prose — try search_docs.`,
+                  `No process or figure matches "${query}"${scope}. Processes ` +
+                  `exist only for documents that have had figure extraction and ` +
+                  `then a process scan run, so the process may be described in ` +
+                  `prose — try search_docs.`,
               },
             ],
-            structuredContent: { query, document: document ?? null, figures: [] },
+            structuredContent: { query, document: document ?? null, processes: [], figures: [] },
           };
         }
 
-        // The same rendering search_docs uses, so a host without UI support
-        // gets exactly what it would have got from a normal search.
-        const citations = figures.map((f) => f.citation);
-        const rendered = figures
-          .map((f, i) => {
-            const image = figureLine(f.citation);
-            return `${citationLine(i + 1, f.citation, f.figure.score)}\n${image}\n${f.figure.description}`;
-          })
-          .join("\n\n---\n\n");
+        // The citation scaffolding search_docs uses, so a host without UI
+        // support gets exactly what it would have got from a normal search.
+        const citations = [...diagrams.map((d) => d.citation), ...figures.map((f) => f.citation)];
+
+        const renderedProcesses = diagrams.map((d, i) => {
+          const actors = d.process.actors.length > 0 ? `\nActors: ${d.process.actors.join(", ")}` : "";
+          // Fenced so the diagram survives as a block rather than being read as
+          // prose, and so a host that renders Markdown draws it.
+          const diagram = `\n\n\u0060\u0060\u0060mermaid\n${d.process.mermaid}\n\u0060\u0060\u0060`;
+          const caveat = d.process.mermaidValid
+            ? ""
+            : "\n(This transcription did not validate — treat it as indicative and check the figure.)";
+          return `${citationLine(i + 1, d.citation, d.process.score)}${actors}${diagram}${caveat}\n${figureLine(d.citation)}`;
+        });
+
+        const renderedFigures = figures.map((f, i) => {
+          const n = diagrams.length + i + 1;
+          return `${citationLine(n, f.citation, f.figure.score)}\n${figureLine(f.citation)}\n${f.figure.description}`;
+        });
+
+        const rendered = [...renderedProcesses, ...renderedFigures].join("\n\n---\n\n");
+        const found = diagrams.length > 0
+          ? `${diagrams.length} process(es)`
+          : `${figures.length} figure(s)`;
 
         return {
           content: [
             {
               type: "text" as const,
               text:
-                `Found ${figures.length} figure(s) for "${query}".\n\n` +
+                `Found ${found} for "${query}".\n\n` +
                 `${rendered}\n\nSources:\n${sourceList(citations)}`,
             },
           ],
           structuredContent: {
             query,
             document: document ?? null,
+            processes: diagrams.map((d) => d.process),
             figures: figures.map((f) => f.figure),
           },
         };
@@ -176,6 +224,77 @@ export function registerDisplayProcessApp(server: McpServer): void {
       }
     }
   );
+}
+
+/**
+ * Semantic search restricted to transcribed processes.
+ *
+ * Same index, same vector space, same query embedding as `search_docs` — the
+ * only thing separating a process from a chunk or a figure is its `kind`, which
+ * is what made it additive. The query is embedded exactly as search_docs embeds
+ * one, since both sides of the asymmetric convention have to agree.
+ */
+async function findProcessDiagrams(
+  query: string,
+  document?: string
+): Promise<{ process: ProcessDiagram; citation: ReturnType<typeof toCitation> }[]> {
+  const { embedding } = await embed({
+    model: EMBEDDING_MODEL,
+    value: `task: search result | query: ${query}`,
+    providerOptions: {
+      google: { outputDimensionality: EMBEDDING_DIMENSIONS, taskType: "RETRIEVAL_QUERY" },
+    },
+  });
+
+  const filter = [
+    `kind = '${PROCESS_KIND}'`,
+    ...(document ? [`source = '${escapeFilterValue(document)}'`] : []),
+  ].join(" AND ");
+
+  const matches = await vectorIndex.query({
+    vector: embedding,
+    filter,
+    topK: MAX_PROCESSES,
+    includeMetadata: true,
+    includeVectors: false,
+  });
+
+  if (!Array.isArray(matches)) return [];
+
+  return matches.flatMap((match) => {
+    const metadata = (match.metadata ?? {}) as ChunkMetadata & {
+      mermaid?: string;
+      mermaidValid?: boolean;
+      actors?: string[];
+    };
+    // A process with no diagram is nothing at all — the Mermaid *is* the
+    // process, not a rendering of something stored elsewhere.
+    if (!metadata.mermaid) return [];
+
+    const citation = toCitation(metadata);
+    return [
+      {
+        citation,
+        process: {
+          id: String(match.id),
+          title: citationLabel(citation),
+          document: citation.source,
+          page: citation.pageStart,
+          mermaid: metadata.mermaid,
+          // Absent on nothing current, but an older entry predating the flag
+          // should read as valid rather than be shown with a warning.
+          mermaidValid: metadata.mermaidValid !== false,
+          actors: Array.isArray(metadata.actors) ? metadata.actors : [],
+          imageUrl: metadata.imageUrl ?? null,
+          sourceUrl:
+            citation.url && citation.pageStart !== null
+              ? `${citation.url}#page=${citation.pageStart}`
+              : citation.url,
+          score: match.score,
+        },
+      },
+    ];
+  });
 }
 
 /**
