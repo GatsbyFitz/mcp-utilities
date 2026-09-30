@@ -1,5 +1,6 @@
 import { vectorIndex } from "./vector";
 import { documentOfFigureId } from "./figures";
+import { documentOfProcessId } from "./processes";
 
 // ---------------------------------------------------------------------------
 // How many figures each document has, counted from the index itself.
@@ -28,7 +29,24 @@ const MAX_PAGES = 50;
  * ones have figures.
  */
 export async function figureCountsByDocument(): Promise<Map<string, number>> {
+  return (await countsByDocument()).figures;
+}
+
+/**
+ * Figure and process counts per document, from one pass over the index.
+ *
+ * Both are derived from the id namespace, so counting them separately would
+ * mean scanning the whole index twice to read the same ids. The argument above
+ * applies to processes unchanged: a stored count is a claim about the index
+ * that a partly-failed scan or a re-run finding fewer results leaves quietly
+ * false.
+ */
+export async function countsByDocument(): Promise<{
+  figures: Map<string, number>;
+  processes: Map<string, number>;
+}> {
   const counts = new Map<string, number>();
+  const processes = new Map<string, number>();
   // Annotated, and the next cursor read into its own annotated binding: the
   // loop feeds `range`'s result back into its own argument, which TypeScript
   // cannot infer through without a break in the cycle.
@@ -46,13 +64,19 @@ export async function figureCountsByDocument(): Promise<Map<string, number>> {
       });
 
     for (const vector of result.vectors) {
-      const document = documentOfFigureId(String(vector.id));
-      if (document) counts.set(document, (counts.get(document) ?? 0) + 1);
+      const id = String(vector.id);
+      const figureDoc = documentOfFigureId(id);
+      if (figureDoc) {
+        counts.set(figureDoc, (counts.get(figureDoc) ?? 0) + 1);
+        continue;
+      }
+      const processDoc = documentOfProcessId(id);
+      if (processDoc) processes.set(processDoc, (processes.get(processDoc) ?? 0) + 1);
     }
 
     if (!result.nextCursor) break;
     cursor = result.nextCursor;
   }
 
-  return counts;
+  return { figures: counts, processes };
 }

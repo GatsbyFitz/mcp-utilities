@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
 import { sql } from "@/lib/db";
-import { figureCountsByDocument } from "@/lib/figureCounts";
+import { countsByDocument } from "@/lib/figureCounts";
 
 
 export async function GET(req: NextRequest) {
@@ -38,10 +38,15 @@ export async function GET(req: NextRequest) {
     // `null` then means "not known", which the UI shows as such rather than
     // as zero — the difference between "no figures" and "could not ask".
     let figures: Map<string, number> | null = null;
+    let processes: Map<string, number> | null = null;
     try {
-      figures = await figureCountsByDocument();
+      // One pass over the index yields both — they are distinguished by their
+      // id namespace, not by separate scans.
+      const counts = await countsByDocument();
+      figures = counts.figures;
+      processes = counts.processes;
     } catch (error) {
-      console.warn("[returnKnowledgeBase] figure counts unavailable:", error);
+      console.warn("[returnKnowledgeBase] index counts unavailable:", error);
     }
 
     // Totals for the header strip. Derived from the rows already fetched and
@@ -59,6 +64,9 @@ export async function GET(req: NextRequest) {
       figures: figures
         ? rows.reduce((total, row) => total + (figures.get(row.name) ?? 0), 0)
         : null,
+      processes: processes
+        ? rows.reduce((total, row) => total + (processes.get(row.name) ?? 0), 0)
+        : null,
     };
 
     return NextResponse.json({
@@ -74,6 +82,7 @@ export async function GET(req: NextRequest) {
         blobDownloadUrl: row.blob_download_url ?? null,
         blobPath: row.blob_path ?? null,
         figures: figures ? (figures.get(row.name) ?? 0) : null,
+        processes: processes ? (processes.get(row.name) ?? 0) : null,
       })),
     });
   } catch (error) {

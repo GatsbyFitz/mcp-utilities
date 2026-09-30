@@ -6,6 +6,7 @@ import { createEmbeddings } from "./steps/createEmbeddings";
 import { extractGraph } from "./steps/extractGraph";
 import { extractFigures } from "./steps/extractFigures";
 import { embedFigures } from "./steps/embedFigures";
+import { extractProcesses, sourcesFromFigures } from "./steps/extractProcesses";
 import { markResumePoint, type ResumePoint } from "./steps/resumePoint";
 
 export async function ingestPdf(input: IngestInput) {
@@ -39,6 +40,17 @@ export async function ingestPdf(input: IngestInput) {
   const figures = await extractFigures(input.fileName, blob.url, markdown);
   const { figureCount } = await embedFigures(input.fileName, blob, markdown, figures);
 
+  // Last, and after the figures it reads: a figure carries the process in its
+  // arrows, and this is the step that turns them into something a model can
+  // follow. Newest and flakiest of the lot, so a failure here costs nothing
+  // that came before it — the same reason figures sit after the graph.
+  const { processCount } = await extractProcesses(
+    input.fileName,
+    blob,
+    markdown,
+    sourcesFromFigures(input.fileName, figures)
+  );
+
   await recordUpload(input.fileName, input.sizeBytes, blob, chunkCount, markdownUrl);
 
   return {
@@ -48,6 +60,7 @@ export async function ingestPdf(input: IngestInput) {
     entities: entityCount,
     relations: relationCount,
     figures: figureCount,
+    processes: processCount,
   };
 }
 
@@ -85,6 +98,13 @@ export async function resumeIngest(resume: ResumePoint) {
   const figures = await extractFigures(resume.fileName, resume.blob.url, markdown);
   const { figureCount } = await embedFigures(resume.fileName, resume.blob, markdown, figures);
 
+  const { processCount } = await extractProcesses(
+    resume.fileName,
+    resume.blob,
+    markdown,
+    sourcesFromFigures(resume.fileName, figures)
+  );
+
   await recordUpload(
     resume.fileName,
     resume.sizeBytes,
@@ -100,5 +120,6 @@ export async function resumeIngest(resume: ResumePoint) {
     entities: entityCount,
     relations: relationCount,
     figures: figureCount,
+    processes: processCount,
   };
 }

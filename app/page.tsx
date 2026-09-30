@@ -2,7 +2,7 @@
 
 import { Fragment, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon, PlayCircle, FileSearch, Scale } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon, PlayCircle, FileSearch, Scale, Workflow } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { upload } from "@vercel/blob/client";
 import {
@@ -14,10 +14,12 @@ import {
 import {
   FIGURE_STEPS,
   INGEST_STEPS,
+  PROCESS_STEPS,
   isTerminalRunStatus,
   type IngestRunProgress,
 } from "@/lib/ingestSteps";
 import type { DocumentRequest } from "@/lib/documentRequests";
+import { formatFine, type ComplianceAction } from "@/lib/compliance";
 import type { DocumentFigure } from "@/lib/figures";
 import type { IncompleteIngestion } from "@/lib/ingestionRuns";
 import type { StrandedMarkdown } from "@/lib/strandedMarkdown";
@@ -53,6 +55,22 @@ type KnowledgeBaseItem = {
   blobPath: string | null;
   /** Figures indexed for this document; null when the count could not be read. */
   figures: number | null;
+  /** Processes transcribed from those figures; null when not countable. */
+  processes: number | null;
+};
+
+// The compliance tracker as the page shows it. `totalCount` and `totalFine`
+// come from the server and are printed as given: they are computed over every
+// matching row, while `actions` may be capped, so recomputing them from what is
+// on screen would quietly under-report the fines.
+type ComplianceView = {
+  actions: ComplianceAction[];
+  totalCount: number;
+  totalFine: number;
+  truncated: boolean;
+  syncedAt: string | null;
+  /** Set when the table has not been provisioned; names the .sql to run. */
+  notice?: string;
 };
 
 // Totals for the header strip, computed server-side from the same rows the
@@ -64,6 +82,7 @@ type KnowledgeBaseStats = {
   pdfBytes: number;
   /** Null when the vector index could not be counted, which is not zero. */
   figures: number | null;
+  processes: number | null;
 };
 
 type KnowledgeBase = {
@@ -83,7 +102,7 @@ type TrackedRun = {
    * recovered from an older sessionStorage entry predate it; those read as
    * ingestion, which is what they were.
    */
-  kind?: "ingest" | "figures";
+  kind?: "ingest" | "figures" | "processes";
 };
 
 // Run IDs are not persisted server-side, so they survive a reload only as far
@@ -126,6 +145,17 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
+/**
+ * Which pipeline a tracked run belongs to, for the placeholder segments drawn
+ * before the first poll lands. Getting this wrong makes a short run flash the
+ * wrong number of segments and then collapse.
+ */
+function stepsForKind(kind: "ingest" | "figures" | "processes") {
+  if (kind === "figures") return FIGURE_STEPS;
+  if (kind === "processes") return PROCESS_STEPS;
+  return INGEST_STEPS;
+}
+
 function formatDate(iso: string): string {
   const date = new Date(iso);
   return Number.isNaN(date.getTime())
@@ -146,10 +176,13 @@ export default function UploadPage() {
   const [reextractingId, setReextractingId] = useState<string | null>(null);
   const [figuresAll, setFiguresAll] = useState(false);
   const [figuresId, setFiguresId] = useState<string | null>(null);
+  const [processesAll, setProcessesAll] = useState(false);
+  const [processesId, setProcessesId] = useState<string | null>(null);
   // The document whose figures are open, by name, plus what was loaded for it.
   const [viewingFigures, setViewingFigures] = useState<string | null>(null);
   const [figureList, setFigureList] = useState<DocumentFigure[]>([]);
   const [loadingFigureList, setLoadingFigureList] = useState(false);
+  const [compliance, setCompliance] = useState<ComplianceView | null>(null);
   const [requests, setRequests] = useState<DocumentRequest[]>([]);
   const [requestsNotice, setRequestsNotice] = useState<string | null>(null);
   const [loadingRequests, setLoadingRequests] = useState(false);
@@ -200,6 +233,19 @@ export default function UploadPage() {
       }
       return next;
     });
+  }, []);
+
+  const loadCompliance = useCallback(async () => {
+    try {
+      const res = await fetch("/api/complianceActions", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Compliance read failed: ${res.status}`);
+      }
+      setCompliance(data as ComplianceView);
+    } catch (error) {
+      console.error("Error fetching compliance actions:", error);
+    }
   }, []);
 
   const loadRequests = useCallback(async () => {
@@ -258,6 +304,10 @@ export default function UploadPage() {
   useEffect(() => {
     loadRequests();
   }, [loadRequests]);
+
+  useEffect(() => {
+    loadCompliance();
+  }, [loadCompliance]);
 
   useEffect(() => {
     loadIncomplete();
@@ -473,6 +523,9 @@ export default function UploadPage() {
           `${data.deleted ? `, removed ${data.deleted} no longer in Notion` : ""}.`,
         error: false,
       });
+      // Show what just landed. A sync that reports a number and leaves the
+      // screen unchanged is the reason a broken one went unnoticed.
+      loadCompliance();
     } catch (error) {
       setActionMessage({
         text: error instanceof Error ? error.message : "Compliance sync failed",
@@ -536,6 +589,69 @@ export default function UploadPage() {
       throw new Error(data.error ?? `Figure extraction request failed: ${res.status}`);
     }
     return data as { queued: number; skipped: number; runs: TrackedRun[] };
+  }
+
+  async function postExtractProcesses(id?: string) {
+    const res = await fetch("/api/extractProcesses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(id ? { id } : {}),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error ?? `Process scan request failed: ${res.status}`);
+    }
+    return data as { queued: number; skipped: number; runs: TrackedRun[] };
+  }
+
+  // Scanning is far less destructive than re-extracting figures — it reads the
+  // figures already in the index and never touches the PDF, the crops, the
+  // chunks or the graph — so neither of these asks for confirmation. The most
+  // it discards is a previous transcription of the same diagram.
+  async function handleScanProcessesAll() {
+    setProcessesAll(true);
+    setActionMessage(null);
+    try {
+      const data = await postExtractProcesses();
+      trackRuns(data.runs ?? [], "processes");
+      setActionMessage({
+        text:
+          `Queued ${data.queued} document(s) for process scanning` +
+          `${data.skipped ? ` (${data.skipped} skipped, no PDF)` : ""}.`,
+        error: false,
+      });
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Process scan failed",
+        error: true,
+      });
+    } finally {
+      setProcessesAll(false);
+    }
+  }
+
+  async function handleScanProcessesRow(id: string, name: string, figures: number | null) {
+    if (figures === 0) {
+      setActionMessage({
+        text: `"${name}" has no figures yet — extract figures first, then scan them for processes.`,
+        error: true,
+      });
+      return;
+    }
+    setProcessesId(id);
+    setActionMessage(null);
+    try {
+      const data = await postExtractProcesses(id);
+      trackRuns(data.runs ?? [], "processes");
+      setActionMessage({ text: `Scanning "${name}" for processes.`, error: false });
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Process scan failed",
+        error: true,
+      });
+    } finally {
+      setProcessesId(null);
+    }
   }
 
   async function handleExtractFiguresAll() {
@@ -1348,11 +1464,14 @@ export default function UploadPage() {
           </Card>
         </div>
 
-        <Card className="w-full min-w-0 lg:flex-1">
+        {/* The right-hand column. The compliance table has six columns and
+            is unreadable in the narrow left one — it needs this width. */}
+        <div className="flex w-full min-w-0 flex-col gap-6 lg:flex-1">
+        <Card className="w-full min-w-0">
           <CardHeader>
             <CardTitle>Knowledge Base</CardTitle>
             <CardDescription>View the current knowledge base records</CardDescription>
-            <CardAction className="flex gap-2">
+            <CardAction className="flex flex-wrap justify-end gap-2">
               <Link
                 href="/graph"
                 className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
@@ -1360,16 +1479,6 @@ export default function UploadPage() {
                 <Share2 />
                 Knowledge graph
               </Link>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleSyncCompliance}
-                disabled={syncingCompliance}
-                title="Pulls the Notion compliance tracker into the index, the graph and the enforcement table"
-              >
-                <Scale className={syncingCompliance ? "animate-spin" : ""} />
-                {syncingCompliance ? "Syncing..." : "Sync compliance"}
-              </Button>
               <Button
                 variant="outline"
                 size="sm"
@@ -1393,6 +1502,16 @@ export default function UploadPage() {
               <Button
                 variant="outline"
                 size="sm"
+                onClick={handleScanProcessesAll}
+                disabled={processesAll || !knowledgeBase?.items.length}
+                title="Reads each document's existing figures and transcribes any process into Mermaid — the PDF, chunks, graph and crops are untouched"
+              >
+                <Workflow className={processesAll ? "animate-spin" : ""} />
+                {processesAll ? "Queuing..." : "Scan processes"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={handleReembedAll}
                 disabled={reembeddingAll || !knowledgeBase?.items.length}
               >
@@ -1412,7 +1531,7 @@ export default function UploadPage() {
           </CardHeader>
           <CardContent>
             {knowledgeBase?.stats && (
-              <div className="mb-4 grid grid-cols-2 gap-4 rounded-lg border p-4 sm:grid-cols-4">
+              <div className="mb-4 grid grid-cols-2 gap-4 rounded-lg border p-4 sm:grid-cols-5">
                 <Stat label="Documents" value={knowledgeBase.stats.documents.toLocaleString()} />
                 <Stat label="Chunks" value={knowledgeBase.stats.chunks.toLocaleString()} />
                 {/* An em dash rather than 0: the index could not be counted,
@@ -1423,6 +1542,14 @@ export default function UploadPage() {
                     knowledgeBase.stats.figures === null
                       ? "\u2014"
                       : knowledgeBase.stats.figures.toLocaleString()
+                  }
+                />
+                <Stat
+                  label="Processes"
+                  value={
+                    knowledgeBase.stats.processes === null
+                      ? "\u2014"
+                      : knowledgeBase.stats.processes.toLocaleString()
                   }
                 />
                 <Stat label="PDF size" value={formatBytes(knowledgeBase.stats.pdfBytes)} />
@@ -1555,6 +1682,21 @@ export default function UploadPage() {
                           <Button
                             variant="outline"
                             size="sm"
+                            onClick={() => handleScanProcessesRow(item.id, item.name, item.figures)}
+                            disabled={
+                              processesId === item.id ||
+                              processesAll ||
+                              figuresId === item.id ||
+                              deletingId === item.id
+                            }
+                            title="Transcribe this document's figures into Mermaid process diagrams"
+                          >
+                            <Workflow className={processesId === item.id ? "animate-spin" : ""} />
+                            {processesId === item.id ? "Queuing..." : "Processes"}
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
                             onClick={() => handleReembedRow(item.id, item.name)}
                             disabled={reembeddingId === item.id || reembeddingAll || deletingId === item.id}
                           >
@@ -1641,6 +1783,103 @@ export default function UploadPage() {
             )}
           </CardContent>
         </Card>
+            {(compliance?.actions.length || compliance?.notice) && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Scale className="size-4" />
+                    Compliance tracker
+                  </CardTitle>
+                  <CardDescription>
+                    {compliance.notice
+                      ? compliance.notice
+                      : /* The totals are the server's, over every matching row.
+                           The table below may be capped; these numbers are not. */
+                        `${compliance.totalCount} enforcement action${
+                          compliance.totalCount === 1 ? "" : "s"
+                        } totalling ${formatFine(compliance.totalFine)}` +
+                        `${
+                          compliance.syncedAt
+                            ? ` \u00b7 last synced ${formatDate(compliance.syncedAt)}`
+                            : ""
+                        }`}
+                  </CardDescription>
+                  <CardAction>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleSyncCompliance}
+                      disabled={syncingCompliance}
+                      title="Pulls the Notion compliance tracker into the index, the graph and the enforcement table"
+                    >
+                      <Scale className={syncingCompliance ? "animate-spin" : ""} />
+                      {syncingCompliance ? "Syncing..." : "Sync compliance"}
+                    </Button>
+                  </CardAction>
+                </CardHeader>
+                <CardContent>
+                  {compliance.actions.length > 0 && (
+                    <>
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Organisation</TableHead>
+                            <TableHead>Regulator</TableHead>
+                            <TableHead>Date</TableHead>
+                            <TableHead className="text-right">Fine</TableHead>
+                            <TableHead>Status</TableHead>
+                            <TableHead>Misconduct</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {compliance.actions.map((action) => (
+                            <TableRow key={action.pageId}>
+                              <TableCell className="font-medium">
+                                {action.sourceUrl ? (
+                                  <a
+                                    href={action.sourceUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="underline underline-offset-2"
+                                    title={action.summary}
+                                  >
+                                    {action.organisation ?? "Unknown"}
+                                  </a>
+                                ) : (
+                                  <span title={action.summary}>{action.organisation ?? "Unknown"}</span>
+                                )}
+                              </TableCell>
+                              <TableCell>{action.regulator ?? "\u2014"}</TableCell>
+                              <TableCell>
+                                {action.actionDate ? formatDate(action.actionDate) : "\u2014"}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {formatFine(action.fine)}
+                              </TableCell>
+                              <TableCell>{action.status ?? "\u2014"}</TableCell>
+                              <TableCell className="text-xs text-muted-foreground">
+                                {action.misconductTypes.length > 0
+                                  ? action.misconductTypes.join(", ")
+                                  : "\u2014"}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                      {/* Said plainly rather than left for the reader to infer
+                          from a table that looks complete. */}
+                      {compliance.truncated && (
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          Showing {compliance.actions.length} of {compliance.totalCount}. The count and
+                          total above cover all of them.
+                        </p>
+                      )}
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+        </div>
       </div>
     </main>
   );
@@ -1656,7 +1895,7 @@ function IngestProgress({
   onRetry,
 }: {
   fileName: string;
-  kind: "ingest" | "figures";
+  kind: "ingest" | "figures" | "processes";
   progress: IngestRunProgress | undefined;
   retrying: boolean;
   onRetry: () => void;
@@ -1693,12 +1932,12 @@ function IngestProgress({
           <span className="min-w-0 truncate text-sm font-medium" title={fileName}>
             {fileName}
           </span>
-          {kind === "figures" && (
+          {kind !== "ingest" && (
             // Several of these can run at once alongside ingestions; without a
             // label the cards are indistinguishable and a short one looks like
             // an ingestion that has stalled.
             <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] text-muted-foreground">
-              figures
+              {kind}
             </span>
           )}
         </span>
@@ -1716,7 +1955,7 @@ function IngestProgress({
             placeholder has to know which pipeline this is — otherwise a
             three-step figure run flashes eight segments and then collapses. */}
         {(progress?.steps ??
-          (kind === "figures" ? FIGURE_STEPS : INGEST_STEPS).map((step) => ({
+          stepsForKind(kind).map((step) => ({
             ...step,
             status: "pending" as const,
             attempt: 1,
@@ -1776,7 +2015,9 @@ function IngestProgress({
         <p className="text-[11px] text-muted-foreground">
           {kind === "figures"
             ? "Press Figures on this document to try again — it clears any figures the failed run stored."
-            : "Failed before the Markdown was saved — upload the file again to retry."}
+            : kind === "processes"
+              ? "Press Processes on this document to try again — it replaces whatever the failed run stored."
+              : "Failed before the Markdown was saved — upload the file again to retry."}
         </p>
       )}
     </div>

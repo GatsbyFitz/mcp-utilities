@@ -15,6 +15,7 @@ export const INGEST_STEPS = [
   { name: "extractGraph", label: "Extracting graph" },
   { name: "extractFigures", label: "Extracting figures" },
   { name: "embedFigures", label: "Embedding figures" },
+  { name: "extractProcesses", label: "Reading processes" },
   { name: "recordUpload", label: "Recording" },
 ] as const;
 
@@ -28,6 +29,7 @@ export const RESUME_STEPS = [
   { name: "extractGraph", label: "Extracting graph" },
   { name: "extractFigures", label: "Extracting figures" },
   { name: "embedFigures", label: "Embedding figures" },
+  { name: "extractProcesses", label: "Reading processes" },
   { name: "recordUpload", label: "Recording" },
 ] as const;
 
@@ -44,6 +46,15 @@ export const FIGURE_STEPS = [
   { name: "fetchMarkdown", label: "Loading Markdown", aka: ["createMarkdown"] },
   { name: "extractFigures", label: "Extracting figures" },
   { name: "embedFigures", label: "Embedding figures" },
+] as const;
+
+// Reading processes out of figures a document already has — the
+// `reextractProcesses` workflow behind POST /api/extractProcesses. Shorter than
+// FIGURE_STEPS because it needs neither the PDF nor the Markdown: the figures
+// are already in the index, with the image URL and page each one needs.
+export const PROCESS_STEPS = [
+  { name: "readFigureSources", label: "Loading figures" },
+  { name: "extractProcesses", label: "Reading processes" },
 ] as const;
 
 /** One reported step, optionally standing in for alternative journal names. */
@@ -65,6 +76,8 @@ export function stepsForWorkflow(workflowName: string | null): readonly Progress
       return RESUME_STEPS;
     case "reextractFigures":
       return FIGURE_STEPS;
+    case "reextractProcesses":
+      return PROCESS_STEPS;
     default:
       return INGEST_STEPS;
   }

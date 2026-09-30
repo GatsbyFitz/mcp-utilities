@@ -51,6 +51,21 @@ export const COMPLIANCE_KIND = "compliance";
  */
 export const COMPLIANCE_SOURCE_DOC = "Compliance Tracker";
 
+/**
+ * Money as a regulator would write it.
+ *
+ * Lives here rather than beside either consumer because both the MCP tool and
+ * the Knowledge Base card print fines, and two copies of a currency format
+ * drift into disagreeing about the same number.
+ *
+ * Null is "no fine", which is not zero: an open investigation has no penalty
+ * yet, and rendering that as $0 would state a finding that has not been made.
+ */
+export function formatFine(fine: number | null): string {
+  if (fine === null) return "no fine";
+  return `$${fine.toLocaleString("en-AU", { maximumFractionDigits: 2 })}`;
+}
+
 // ---------------------------------------------------------------------------
 // The "not provisioned yet" case
 // ---------------------------------------------------------------------------
