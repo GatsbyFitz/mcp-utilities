@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import {
+  formatFine,
   isMissingComplianceTable,
   MISSING_COMPLIANCE_MESSAGE,
   type ComplianceAction,
@@ -19,12 +20,6 @@ import { facets, queryActions, type ComplianceFacets } from "@/lib/complianceSto
 // The same actions are also embedded and graphed, so `search_docs` can find
 // one by what it was about and `search_graph` can walk who was penalised by
 // whom. This tool is for the questions those two answer badly.
-
-/** Money as a regulator would write it, so the model quotes it back correctly. */
-function formatFine(fine: number | null): string {
-  if (fine === null) return "no fine";
-  return `$${fine.toLocaleString("en-AU", { maximumFractionDigits: 2 })}`;
-}
 
 function renderAction(action: ComplianceAction, n: number): string {
   const head = [

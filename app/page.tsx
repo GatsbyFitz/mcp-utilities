@@ -19,6 +19,7 @@ import {
   type IngestRunProgress,
 } from "@/lib/ingestSteps";
 import type { DocumentRequest } from "@/lib/documentRequests";
+import { formatFine, type ComplianceAction } from "@/lib/compliance";
 import type { DocumentFigure } from "@/lib/figures";
 import type { IncompleteIngestion } from "@/lib/ingestionRuns";
 import type { StrandedMarkdown } from "@/lib/strandedMarkdown";
@@ -56,6 +57,20 @@ type KnowledgeBaseItem = {
   figures: number | null;
   /** Processes transcribed from those figures; null when not countable. */
   processes: number | null;
+};
+
+// The compliance tracker as the page shows it. `totalCount` and `totalFine`
+// come from the server and are printed as given: they are computed over every
+// matching row, while `actions` may be capped, so recomputing them from what is
+// on screen would quietly under-report the fines.
+type ComplianceView = {
+  actions: ComplianceAction[];
+  totalCount: number;
+  totalFine: number;
+  truncated: boolean;
+  syncedAt: string | null;
+  /** Set when the table has not been provisioned; names the .sql to run. */
+  notice?: string;
 };
 
 // Totals for the header strip, computed server-side from the same rows the
@@ -167,6 +182,7 @@ export default function UploadPage() {
   const [viewingFigures, setViewingFigures] = useState<string | null>(null);
   const [figureList, setFigureList] = useState<DocumentFigure[]>([]);
   const [loadingFigureList, setLoadingFigureList] = useState(false);
+  const [compliance, setCompliance] = useState<ComplianceView | null>(null);
   const [requests, setRequests] = useState<DocumentRequest[]>([]);
   const [requestsNotice, setRequestsNotice] = useState<string | null>(null);
   const [loadingRequests, setLoadingRequests] = useState(false);
@@ -217,6 +233,19 @@ export default function UploadPage() {
       }
       return next;
     });
+  }, []);
+
+  const loadCompliance = useCallback(async () => {
+    try {
+      const res = await fetch("/api/complianceActions", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Compliance read failed: ${res.status}`);
+      }
+      setCompliance(data as ComplianceView);
+    } catch (error) {
+      console.error("Error fetching compliance actions:", error);
+    }
   }, []);
 
   const loadRequests = useCallback(async () => {
@@ -275,6 +304,10 @@ export default function UploadPage() {
   useEffect(() => {
     loadRequests();
   }, [loadRequests]);
+
+  useEffect(() => {
+    loadCompliance();
+  }, [loadCompliance]);
 
   useEffect(() => {
     loadIncomplete();
@@ -490,6 +523,9 @@ export default function UploadPage() {
           `${data.deleted ? `, removed ${data.deleted} no longer in Notion` : ""}.`,
         error: false,
       });
+      // Show what just landed. A sync that reports a number and leaves the
+      // screen unchanged is the reason a broken one went unnoticed.
+      loadCompliance();
     } catch (error) {
       setActionMessage({
         text: error instanceof Error ? error.message : "Compliance sync failed",
@@ -1428,11 +1464,14 @@ export default function UploadPage() {
           </Card>
         </div>
 
-        <Card className="w-full min-w-0 lg:flex-1">
+        {/* The right-hand column. The compliance table has six columns and
+            is unreadable in the narrow left one — it needs this width. */}
+        <div className="flex w-full min-w-0 flex-col gap-6 lg:flex-1">
+        <Card className="w-full min-w-0">
           <CardHeader>
             <CardTitle>Knowledge Base</CardTitle>
             <CardDescription>View the current knowledge base records</CardDescription>
-            <CardAction className="flex gap-2">
+            <CardAction className="flex flex-wrap justify-end gap-2">
               <Link
                 href="/graph"
                 className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
@@ -1440,16 +1479,6 @@ export default function UploadPage() {
                 <Share2 />
                 Knowledge graph
               </Link>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleSyncCompliance}
-                disabled={syncingCompliance}
-                title="Pulls the Notion compliance tracker into the index, the graph and the enforcement table"
-              >
-                <Scale className={syncingCompliance ? "animate-spin" : ""} />
-                {syncingCompliance ? "Syncing..." : "Sync compliance"}
-              </Button>
               <Button
                 variant="outline"
                 size="sm"
@@ -1754,6 +1783,103 @@ export default function UploadPage() {
             )}
           </CardContent>
         </Card>
+            {(compliance?.actions.length || compliance?.notice) && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Scale className="size-4" />
+                    Compliance tracker
+                  </CardTitle>
+                  <CardDescription>
+                    {compliance.notice
+                      ? compliance.notice
+                      : /* The totals are the server's, over every matching row.
+                           The table below may be capped; these numbers are not. */
+                        `${compliance.totalCount} enforcement action${
+                          compliance.totalCount === 1 ? "" : "s"
+                        } totalling ${formatFine(compliance.totalFine)}` +
+                        `${
+                          compliance.syncedAt
+                            ? ` \u00b7 last synced ${formatDate(compliance.syncedAt)}`
+                            : ""
+                        }`}
+                  </CardDescription>
+                  <CardAction>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleSyncCompliance}
+                      disabled={syncingCompliance}
+                      title="Pulls the Notion compliance tracker into the index, the graph and the enforcement table"
+                    >
+                      <Scale className={syncingCompliance ? "animate-spin" : ""} />
+                      {syncingCompliance ? "Syncing..." : "Sync compliance"}
+                    </Button>
+                  </CardAction>
+                </CardHeader>
+                <CardContent>
+                  {compliance.actions.length > 0 && (
+                    <>
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Organisation</TableHead>
+                            <TableHead>Regulator</TableHead>
+                            <TableHead>Date</TableHead>
+                            <TableHead className="text-right">Fine</TableHead>
+                            <TableHead>Status</TableHead>
+                            <TableHead>Misconduct</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {compliance.actions.map((action) => (
+                            <TableRow key={action.pageId}>
+                              <TableCell className="font-medium">
+                                {action.sourceUrl ? (
+                                  <a
+                                    href={action.sourceUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="underline underline-offset-2"
+                                    title={action.summary}
+                                  >
+                                    {action.organisation ?? "Unknown"}
+                                  </a>
+                                ) : (
+                                  <span title={action.summary}>{action.organisation ?? "Unknown"}</span>
+                                )}
+                              </TableCell>
+                              <TableCell>{action.regulator ?? "\u2014"}</TableCell>
+                              <TableCell>
+                                {action.actionDate ? formatDate(action.actionDate) : "\u2014"}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {formatFine(action.fine)}
+                              </TableCell>
+                              <TableCell>{action.status ?? "\u2014"}</TableCell>
+                              <TableCell className="text-xs text-muted-foreground">
+                                {action.misconductTypes.length > 0
+                                  ? action.misconductTypes.join(", ")
+                                  : "\u2014"}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                      {/* Said plainly rather than left for the reader to infer
+                          from a table that looks complete. */}
+                      {compliance.truncated && (
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          Showing {compliance.actions.length} of {compliance.totalCount}. The count and
+                          total above cover all of them.
+                        </p>
+                      )}
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+        </div>
       </div>
     </main>
   );
