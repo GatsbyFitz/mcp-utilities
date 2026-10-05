@@ -141,9 +141,13 @@ async function readRunProgress(runId: string): Promise<IngestRunProgress> {
     currentStepLabel: currentStep?.label ?? null,
     failedStepLabel: failedStep?.label ?? null,
     error: failedStep?.error ?? null,
-    // A run is only worth offering a retry for once it has actually failed.
+    // Offered once a run has stopped for good and left a resume point behind.
+    // Cancelled counts as well as failed: `retryUpload` only cares that the
+    // markdown was persisted, not why the previous run stopped, so a run
+    // cancelled on purpose can still be finished without re-parsing the PDF.
     resumable:
-      status === "failed" && steps.get(RESUME_POINT_STEP)?.status === "completed",
+      (status === "failed" || status === "cancelled") &&
+      steps.get(RESUME_POINT_STEP)?.status === "completed",
     workflowName,
     startedAt: startedAt?.toISOString() ?? null,
     completedAt: completedAt?.toISOString() ?? null,
