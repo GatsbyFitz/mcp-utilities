@@ -201,6 +201,7 @@ export default function UploadPage() {
   const [notices, setNotices] = useState<string[]>([]);
   const [uploadProgress, setUploadProgress] = useState<{ fileName: string; percentage: number }[]>([]);
   const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
+  const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
   // Ingestions the database knows started and has no `uploads` row for. Cheap
   // enough to load on mount — one indexed query against a table that only holds
   // unfinished work.
@@ -378,6 +379,35 @@ export default function UploadPage() {
   // Retries a failed ingestion from the Markdown it already persisted. The
   // runtime cannot resume a failed run in place, so the server starts a fresh
   // run; we swap the tracked run ID for the new one, which restarts polling.
+  async function handleCancelRun(runId: string) {
+    setCancellingRunId(runId);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/cancelRun", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Cancel failed: ${res.status}`);
+      }
+      // Nothing to update here: the run reports "cancelled" on the next poll,
+      // which is terminal, so the existing loop stops on its own.
+      setActionMessage({
+        text: "Cancelling \u2014 the run stops after the step currently in flight.",
+        error: false,
+      });
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : "Could not cancel the run",
+        error: true,
+      });
+    } finally {
+      setCancellingRunId(null);
+    }
+  }
+
   async function handleRetry(runId: string) {
     setRetryingRunId(runId);
     setActionMessage(null);
@@ -1157,6 +1187,8 @@ export default function UploadPage() {
                     progress={runProgress[run.runId]}
                     retrying={retryingRunId === run.runId}
                     onRetry={() => handleRetry(run.runId)}
+                    cancelling={cancellingRunId === run.runId}
+                    onCancel={() => handleCancelRun(run.runId)}
                   />
                 ))}
               </CardContent>
@@ -1567,6 +1599,7 @@ export default function UploadPage() {
                     <TableHead>Name</TableHead>
                     <TableHead className="text-right">Chunks</TableHead>
                     <TableHead className="text-right">Figures</TableHead>
+                    <TableHead className="text-right">Processes</TableHead>
                     <TableHead className="text-right">Size</TableHead>
                     <TableHead>Uploaded</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
@@ -1615,6 +1648,22 @@ export default function UploadPage() {
                           >
                             {item.figures}
                           </button>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {item.processes === null ? (
+                          // Not the same as zero: the index could not be read,
+                          // and printing 0 would claim this document has no
+                          // processes when the truth is we could not ask.
+                          <span className="text-muted-foreground" title="Process count unavailable">
+                            —
+                          </span>
+                        ) : item.processes === 0 ? (
+                          <span className="text-muted-foreground">0</span>
+                        ) : (
+                          // Plain text, unlike Figures: there is no
+                          // per-document process route to open.
+                          item.processes
                         )}
                       </TableCell>
                       <TableCell className="text-right whitespace-nowrap">
@@ -1721,7 +1770,7 @@ export default function UploadPage() {
                         useful read next to the document it came from. */}
                     {viewingFigures === item.name && (
                       <TableRow>
-                        <TableCell colSpan={6} className="bg-muted/30">
+                        <TableCell colSpan={7} className="bg-muted/30">
                           {loadingFigureList ? (
                             <p className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
                               <Loader2 className="size-3 animate-spin" />
@@ -1893,14 +1942,22 @@ function IngestProgress({
   progress,
   retrying,
   onRetry,
+  cancelling,
+  onCancel,
 }: {
   fileName: string;
   kind: "ingest" | "figures" | "processes";
   progress: IngestRunProgress | undefined;
   retrying: boolean;
   onRetry: () => void;
+  cancelling: boolean;
+  onCancel: () => void;
 }) {
-  const failed = progress?.status === "failed" || progress?.status === "cancelled";
+  // Cancelled is deliberate and must not read as a failure: it used to share
+  // this branch, which meant stopping a run on purpose reported "Failed during
+  // embedding" and offered to retry it.
+  const cancelled = progress?.status === "cancelled";
+  const failed = progress?.status === "failed";
   const done = progress?.status === "completed";
   // The runtime no longer knows this run — it expired, or the deployment moved on.
   const unknown = progress?.status === "unknown";
@@ -1913,6 +1970,10 @@ function IngestProgress({
     detail = "Queued";
   } else if (done) {
     detail = "Complete";
+  } else if (cancelled) {
+    detail = progress.currentStepLabel
+      ? `Cancelled during ${progress.currentStepLabel.toLowerCase()}`
+      : "Cancelled";
   } else if (failed) {
     detail = progress.failedStepLabel
       ? `Failed during ${progress.failedStepLabel.toLowerCase()}`
@@ -1968,9 +2029,11 @@ function IngestProgress({
                 ? "bg-green-400"
                 : step.status === "running"
                   ? "animate-pulse bg-white"
-                  : step.status === "failed" || step.status === "cancelled"
+                  : step.status === "failed"
                     ? "bg-red-400"
-                    : "bg-white/15"
+                    : step.status === "cancelled"
+                      ? "bg-white/30"
+                      : "bg-white/15"
             }`}
             title={`${step.label}: ${step.status}`}
           />
@@ -1993,6 +2056,24 @@ function IngestProgress({
           {progress.error.code ? `${progress.error.code}: ` : ""}
           {progress.error.message}
         </p>
+      )}
+
+      {/* Only while there is something to stop. A run with no progress yet is
+          still queued and still cancellable, which is often exactly when you
+          realise you started the wrong one. */}
+      {(!progress || !isTerminalRunStatus(progress.status)) && (
+        <div className="space-y-1">
+          <Button variant="outline" size="sm" onClick={onCancel} disabled={cancelling}>
+            <X className={cancelling ? "animate-spin" : ""} />
+            {cancelling ? "Cancelling..." : "Cancel"}
+          </Button>
+          <p className="text-[11px] text-muted-foreground">
+            Stops after the step currently in flight — that step still finishes.
+            {kind === "ingest"
+              ? " Anything already indexed stays, and the document can be finished later from its saved Markdown."
+              : " Re-run it to restore whatever this run had already replaced."}
+          </p>
+        </div>
       )}
 
       {progress?.resumable && (
