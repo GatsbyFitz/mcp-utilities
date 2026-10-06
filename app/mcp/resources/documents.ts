@@ -1,5 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { sql } from "@/lib/db";
+import { countsByDocument } from "@/lib/figureCounts";
+import { documentEntries, type UploadRow } from "@/lib/documentList";
 
 export function registerDocumentsResource(server: McpServer): void {
   server.registerResource(
@@ -25,14 +27,19 @@ export function registerDocumentsResource(server: McpServer): void {
           ORDER BY uploaded_at DESC
         `;
 
-        const documents = rows.map((row) => ({
-          id: row.id,
-          name: row.name,
-          chunks: row.chunks,
-          sizeBytes: row.size_bytes,
-          uploadedAt: row.uploaded_at,
-          blobUrl: row.blob_url ?? null,
-        }));
+        // Counted from the index, in its own try/catch inside the one above.
+        // A model needs these to know whether display_process is worth calling
+        // for a document at all — but failing to count them must not cost the
+        // list, which is this resource's actual job. One pass yields both:
+        // they are told apart by their id namespace, not by separate scans.
+        let counts: { figures: Map<string, number>; processes: Map<string, number> } | null = null;
+        try {
+          counts = await countsByDocument();
+        } catch (err) {
+          console.warn("[kb://documents] index counts unavailable:", err);
+        }
+
+        const documents = documentEntries(rows as unknown as UploadRow[], counts);
 
         return {
           contents: [

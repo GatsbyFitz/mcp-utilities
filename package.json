@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "verify:multimodal": "node --env-file=.env.local scripts/verify-multimodal-embedding.mjs",
     "verify:sync-errors": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-sync-errors.mjs",
-    "verify:processes": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-processes.mjs"
+    "verify:processes": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-processes.mjs",
+    "verify:kb-documents": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-kb-documents.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.10",
