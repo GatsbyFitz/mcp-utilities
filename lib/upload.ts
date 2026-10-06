@@ -12,6 +12,28 @@ import { v4 as uuidv4 } from "uuid";
 export const ALLOWED_UPLOAD_CONTENT_TYPES = ["application/pdf"];
 
 /**
+ * Spreadsheets, for the AER schedule path — kept separate from the PDF list
+ * above rather than merged into it.
+ *
+ * The PDF list gates the token route *and* `lib/fetchDocument`, so widening it
+ * would let a workbook through the document pipeline, where it would fail deep
+ * inside `createMarkdown` instead of being refused at the door. Each caller
+ * names the list it means.
+ *
+ * `.xlsm` is here because the AER actually ships it: Q3 2024-25 was published
+ * macro-enabled while neighbouring quarters were `.xlsx`.
+ */
+export const ALLOWED_SPREADSHEET_CONTENT_TYPES = [
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel.sheet.macroEnabled.12",
+];
+
+/** Blob pathname for an uploaded spreadsheet, kept out of `uploads/`. */
+export function schedulePathname(fileName: string): string {
+  return `schedules/${uuidv4()}-${fileName}`;
+}
+
+/**
  * Ceiling the issued upload token will authorise. Not a platform limit —
  * Blob itself handles far larger with `multipart` — just a sanity bound so a
  * mis-selected file can't consume the store.
