@@ -20,7 +20,9 @@ import {
   type FigureBox,
   figureBlobPrefix,
   figurePagesFrom,
+  emptyFigureReport,
   type ExtractedFigure,
+  type FigureOutcome,
 } from "@/lib/figures";
 
 // ---------------------------------------------------------------------------
@@ -82,10 +84,13 @@ export async function extractFigures(
   fileName: string,
   blobUrl: string,
   markdown: string
-): Promise<ExtractedFigure[]> {
+): Promise<FigureOutcome> {
   "use step";
 
   const pages = figurePagesFrom(markdown);
+  // Counted as we go and returned, rather than only logged. "0 figures" has
+  // several causes that are indistinguishable from outside — see FigureReport.
+  const report = emptyFigureReport(pages.length);
 
   // Clear any previous run's PNGs before writing new ones. Re-running with a
   // changed prompt produces different crops under different names, so without
@@ -94,7 +99,17 @@ export async function extractFigures(
   // now yields no figures still gets cleaned up.
   await deleteFigureBlobs(fileName);
 
-  if (pages.length === 0) return [];
+  if (pages.length === 0) {
+    // The single most common reason a document has no figures, and the one
+    // that looks exactly like "this PDF has no diagrams". It does not: this
+    // run's Markdown simply carries no `[Figure:` markers, so no page was ever
+    // rendered. Said plainly here because the caller reports it to a person.
+    console.warn(
+      `[extractFigures] ${fileName}: the stored Markdown marks no figure pages ` +
+        `— no page was rendered. Re-parsing the PDF is the only thing that changes this.`
+    );
+    return { figures: [], report };
+  }
 
   const res = await fetch(blobUrl);
   if (!res.ok) throw new FatalError(`Blob fetch failed: ${res.status}`);
@@ -110,7 +125,14 @@ export async function extractFigures(
     // `page` is the printed page number from the parse; the document is
     // 0-indexed and the two can disagree if the PDF has front matter.
     const index = page - 1;
-    if (index < 0 || index >= pageCount) return [];
+    if (index < 0 || index >= pageCount) {
+      report.pagesFailed++;
+      console.warn(
+        `[extractFigures] ${fileName}: page ${page} is outside the PDF's ${pageCount} pages`
+      );
+      return [];
+    }
+    report.pagesScanned++;
 
     try {
       const loaded = doc.loadPage(index);
@@ -138,12 +160,16 @@ export async function extractFigures(
       });
 
       const found = (output.figures ?? []).slice(0, MAX_FIGURES_PER_PAGE);
+      report.proposed += found.length;
       if (found.length === 0) return [];
 
       return await Promise.all(
         found.map(async (figure, n) => {
           const description = figure.description.trim().slice(0, MAX_FIGURE_DESCRIPTION);
-          if (!description) return null;
+          if (!description) {
+            report.droppedEmpty++;
+            return null;
+          }
 
           // Page furniture the prompt asked it to skip and it reported anyway.
           // Dropped outright rather than sent to the whole-page fallback: that
@@ -152,6 +178,7 @@ export async function extractFigures(
           // embedded, stored and returned to a model as if it answered
           // something.
           if (isDecorative(figure)) {
+            report.droppedDecorative++;
             console.warn(
               `[extractFigures] ${fileName} p${page} #${n}: dropped, covers ` +
                 `${(boxArea(figure) * 100).toFixed(1)}% of the page ` +
@@ -165,6 +192,7 @@ export async function extractFigures(
           // crop from a bad one after the fact is to have the numbers.
           const box = usableBox(figure);
           if (!box) {
+            report.wholePageFallbacks++;
             console.warn(
               `[extractFigures] ${fileName} p${page} #${n}: unusable box ` +
                 `(${figure.x0}, ${figure.y0}, ${figure.x1}, ${figure.y1}) — cropping whole page`
@@ -212,12 +240,23 @@ export async function extractFigures(
       // the parse and the embeddings, and losing all of that because one page
       // failed to render or the model returned something unparseable would be
       // a far worse outcome than a document with fewer figures.
+      report.pagesFailed++;
       console.warn(`[extractFigures] ${fileName} page ${page}: skipped —`, error);
       return [];
     }
   });
 
-  return perPage.flat().filter((f): f is ExtractedFigure => f !== null);
+  const figures = perPage.flat().filter((f): f is ExtractedFigure => f !== null);
+  report.kept = figures.length;
+
+  console.log(
+    `[extractFigures] ${fileName}: ${report.kept} kept from ${report.proposed} proposed ` +
+      `across ${report.pagesScanned}/${report.markedPages} marked page(s)` +
+      `; ${report.droppedDecorative} decorative, ${report.droppedEmpty} undescribed` +
+      `, ${report.wholePageFallbacks} whole-page fallback(s), ${report.pagesFailed} page(s) failed`
+  );
+
+  return { figures, report };
 }
 
 /**

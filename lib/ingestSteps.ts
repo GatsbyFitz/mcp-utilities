@@ -1,3 +1,6 @@
+import type { FigureReport } from "@/lib/figures";
+import type { ProcessReport } from "@/lib/processes";
+
 // Shared vocabulary for reporting ingestion progress, used by
 // `GET /api/uploadStatus` and by the upload page that polls it.
 //
@@ -57,6 +60,16 @@ export const PROCESS_STEPS = [
   { name: "extractProcesses", label: "Reading processes" },
 ] as const;
 
+// One AER schedule workbook — the `ingestSchedule` workflow behind
+// POST /api/ingestSchedule. Three steps because they fail differently: reading
+// the sheets is deterministic, inferring what the columns mean is the only
+// model call, and writing the rows is the only database work.
+export const SCHEDULE_STEPS = [
+  { name: "readSheetPreviews", label: "Reading sheets" },
+  { name: "inferMappings", label: "Reading the column layout" },
+  { name: "extractAndStore", label: "Storing observations" },
+] as const;
+
 /** One reported step, optionally standing in for alternative journal names. */
 export interface ProgressStep {
   name: string;
@@ -78,6 +91,8 @@ export function stepsForWorkflow(workflowName: string | null): readonly Progress
       return FIGURE_STEPS;
     case "reextractProcesses":
       return PROCESS_STEPS;
+    case "ingestSchedule":
+      return SCHEDULE_STEPS;
     default:
       return INGEST_STEPS;
   }
@@ -127,6 +142,19 @@ export interface IngestStepProgress {
   completedAt: string | null;
 }
 
+/**
+ * What a finished run produced, read from the workflow's own return value.
+ *
+ * Only ever populated for a completed run: `run.returnValue` polls until the
+ * run finishes, so asking for it mid-flight would hang the status poll. Both
+ * fields are optional because not every workflow produces both — a process
+ * re-scan has no figure report, and a graph rebuild has neither.
+ */
+export interface IngestRunOutcome {
+  figureReport?: FigureReport;
+  processReport?: ProcessReport;
+}
+
 export interface IngestRunProgress {
   runId: string;
   status: IngestRunStatus;
@@ -146,6 +174,11 @@ export interface IngestRunProgress {
    * PDF. False for a run that failed before the markdown existed.
    */
   resumable: boolean;
+  /**
+   * What the run produced, once it has completed. Null while it is running,
+   * and null for a run whose workflow returns neither report.
+   */
+  outcome: IngestRunOutcome | null;
   /** Which workflow produced these steps: "ingestPdf" or "resumeIngest". */
   workflowName: string | null;
   startedAt: string | null;

@@ -23,7 +23,8 @@ export async function GET(req: NextRequest) {
         uploaded_at,
         blob_url,
         blob_download_url,
-        blob_path
+        blob_path,
+        markdown_url
       FROM uploads
       ORDER BY uploaded_at DESC
     `;
@@ -81,6 +82,11 @@ export async function GET(req: NextRequest) {
         blobUrl: row.blob_url ?? null,
         blobDownloadUrl: row.blob_download_url ?? null,
         blobPath: row.blob_path ?? null,
+        // The converted Markdown, which is what figure extraction actually
+        // reads — a document with no `[Figure:` markers in here can never
+        // yield a figure, however many diagrams the PDF has. Exposed so that
+        // is checkable without a blob listing.
+        markdownUrl: row.markdown_url ?? null,
         figures: figures ? (figures.get(row.name) ?? 0) : null,
         processes: processes ? (processes.get(row.name) ?? 0) : null,
       })),

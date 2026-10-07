@@ -2,12 +2,13 @@
 
 import { Fragment, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon, PlayCircle, FileSearch, Scale, Workflow } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon, PlayCircle, FileSearch, Scale, Workflow, FileSpreadsheet } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { upload } from "@vercel/blob/client";
 import {
   MAX_UPLOAD_BYTES,
   normalizeName,
+  schedulePathname,
   uploadPathname,
   type UploadedFile,
 } from "@/lib/upload";
@@ -15,12 +16,15 @@ import {
   FIGURE_STEPS,
   INGEST_STEPS,
   PROCESS_STEPS,
+  SCHEDULE_STEPS,
   isTerminalRunStatus,
   type IngestRunProgress,
 } from "@/lib/ingestSteps";
 import type { DocumentRequest } from "@/lib/documentRequests";
 import { formatFine, type ComplianceAction } from "@/lib/compliance";
+import { SCHEDULES, SCHEDULE_SUBJECTS, periodBounds } from "@/lib/aerPerformance";
 import type { DocumentFigure } from "@/lib/figures";
+import { describeFigureRun, describeProcessRun, type ExtractionOutcome } from "@/lib/extractionReport";
 import type { IncompleteIngestion } from "@/lib/ingestionRuns";
 import type { StrandedMarkdown } from "@/lib/strandedMarkdown";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -53,6 +57,12 @@ type KnowledgeBaseItem = {
   blobUrl: string | null;
   blobDownloadUrl: string | null;
   blobPath: string | null;
+  /**
+   * The converted Markdown. Worth having at hand: it is what figure
+   * extraction reads, so a document whose Markdown holds no `[Figure: …]`
+   * markers can never produce a figure, whatever the PDF contains.
+   */
+  markdownUrl: string | null;
   /** Figures indexed for this document; null when the count could not be read. */
   figures: number | null;
   /** Processes transcribed from those figures; null when not countable. */
@@ -70,6 +80,26 @@ type ComplianceView = {
   truncated: boolean;
   syncedAt: string | null;
   /** Set when the table has not been provisioned; names the .sql to run. */
+  notice?: string;
+};
+
+// What has been ingested from the AER retail performance schedules. Counts are
+// the server's, over every row — `observations` comes from a window function
+// over the whole table, not from a page of rows.
+type AerSummary = {
+  observations: number;
+  retailers: number;
+  metrics: number;
+  periods: string[];
+  schedules: number[];
+  latestPeriod: string | null;
+  /**
+   * Metrics first seen in the latest period. Shown rather than absorbed: one
+   * is either new reporting or a rename inference failed to match, and an
+   * unmatched rename splits a series so a query answers with half the history.
+   */
+  newMetrics: string[];
+  /** Set when the tables have not been provisioned; names the .sql to run. */
   notice?: string;
 };
 
@@ -102,7 +132,7 @@ type TrackedRun = {
    * recovered from an older sessionStorage entry predate it; those read as
    * ingestion, which is what they were.
    */
-  kind?: "ingest" | "figures" | "processes";
+  kind?: "ingest" | "figures" | "processes" | "schedule";
 };
 
 // Run IDs are not persisted server-side, so they survive a reload only as far
@@ -150,9 +180,10 @@ function Stat({ label, value }: { label: string; value: string }) {
  * before the first poll lands. Getting this wrong makes a short run flash the
  * wrong number of segments and then collapse.
  */
-function stepsForKind(kind: "ingest" | "figures" | "processes") {
+function stepsForKind(kind: "ingest" | "figures" | "processes" | "schedule") {
   if (kind === "figures") return FIGURE_STEPS;
   if (kind === "processes") return PROCESS_STEPS;
+  if (kind === "schedule") return SCHEDULE_STEPS;
   return INGEST_STEPS;
 }
 
@@ -217,6 +248,15 @@ export default function UploadPage() {
   const [scanningMarkdown, setScanningMarkdown] = useState(false);
   const [restartingName, setRestartingName] = useState<string | null>(null);
   const [syncingCompliance, setSyncingCompliance] = useState(false);
+  // The AER schedules. One card: what has been ingested, and the upload that
+  // adds a quarter to it.
+  const [aer, setAer] = useState<AerSummary | null>(null);
+  const [ingestingSchedule, setIngestingSchedule] = useState(false);
+  // Null when no transfer is in flight — 0 is a transfer that has just started.
+  const [schedulePercent, setSchedulePercent] = useState<number | null>(null);
+  const [scheduleMessage, setScheduleMessage] = useState<{ text: string; error: boolean } | null>(
+    null
+  );
 
   // Both a browser upload and an approved document request start ingestion
   // runs the same way, so both feed the same tracker.
@@ -246,6 +286,19 @@ export default function UploadPage() {
       setCompliance(data as ComplianceView);
     } catch (error) {
       console.error("Error fetching compliance actions:", error);
+    }
+  }, []);
+
+  const loadAer = useCallback(async () => {
+    try {
+      const res = await fetch("/api/aerSummary", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `AER summary failed: ${res.status}`);
+      }
+      setAer(data as AerSummary);
+    } catch (error) {
+      console.error("Error fetching the AER summary:", error);
     }
   }, []);
 
@@ -314,6 +367,10 @@ export default function UploadPage() {
     loadIncomplete();
   }, [loadIncomplete]);
 
+  useEffect(() => {
+    loadAer();
+  }, [loadAer]);
+
   // Recover runs from a reload mid-ingestion. Anything the runtime has since
   // forgotten comes back as "unknown" and simply stops being polled.
   useEffect(() => {
@@ -357,6 +414,11 @@ export default function UploadPage() {
             }
             refreshKnowledgeBase();
             loadIncomplete();
+            // A schedule ingest writes its rows in its last step, so the
+            // numbers only change here. Refreshed unconditionally rather than
+            // per kind — it is one indexed query, and a stale observation
+            // count is exactly the kind of thing nobody notices.
+            loadAer();
             return;
           }
         }
@@ -374,7 +436,7 @@ export default function UploadPage() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [trackedRuns, refreshKnowledgeBase, loadIncomplete]);
+  }, [trackedRuns, refreshKnowledgeBase, loadIncomplete, loadAer]);
 
   // Retries a failed ingestion from the Markdown it already persisted. The
   // runtime cannot resume a failed run in place, so the server starts a fresh
@@ -563,6 +625,100 @@ export default function UploadPage() {
       });
     } finally {
       setSyncingCompliance(false);
+    }
+  }
+
+  /**
+   * Ingest one AER schedule workbook.
+   *
+   * Straight to Blob then a JSON manifest, the same shape as the PDF upload and
+   * for the same reason — a Vercel function caps its request body at 4.5 MB and
+   * a Schedule 3 workbook exceeds that. See .claude/conventions/file-uploads.md.
+   *
+   * The schedule number and the period are typed in rather than read out of the
+   * file. They are on the AER's release page, not reliably inside the workbook,
+   * and a quarter filed under the wrong label is wrong in a way no later query
+   * could detect.
+   */
+  async function handleIngestSchedule(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const file = (form.elements.namedItem("schedule-file") as HTMLInputElement).files?.[0];
+    const sourceUrl = (form.elements.namedItem("schedule-url") as HTMLInputElement).value.trim();
+    const schedule = Number((form.elements.namedItem("schedule-number") as HTMLSelectElement).value);
+    const periodLabel = (form.elements.namedItem("schedule-period") as HTMLInputElement).value.trim();
+
+    if (!file && !sourceUrl) {
+      setScheduleMessage({ text: "Choose a workbook, or paste a link to one.", error: true });
+      return;
+    }
+
+    // Checked before the upload, not after: the route checks it too, but by
+    // then a multi-megabyte workbook has already been transferred for a typo.
+    if (!periodBounds(periodLabel)) {
+      setScheduleMessage({
+        text: `Could not read a period from "${periodLabel}". Expected something like "2023-24 Q3".`,
+        error: true,
+      });
+      return;
+    }
+
+    setIngestingSchedule(true);
+    setScheduleMessage(null);
+    // Only a browser upload has a transfer to report. The URL path is fetched
+    // server-side, so there is no percentage here to show.
+    setSchedulePercent(file ? 0 : null);
+
+    try {
+      // A chosen file wins over a pasted link: it is the more deliberate of
+      // the two, and a leftover URL in the field should not silently decide
+      // which workbook is ingested.
+      const manifest = file
+        ? await (async () => {
+            const blob = await upload(schedulePathname(file.name), file, {
+              access: "public",
+              handleUploadUrl: "/api/ingestSchedule/token",
+              multipart: true,
+              clientPayload: JSON.stringify({ fileName: file.name }),
+              onUploadProgress: ({ percentage }) => setSchedulePercent(percentage),
+            });
+            return { blobUrl: blob.url, fileName: file.name };
+          })()
+        : { sourceUrl };
+
+      const res = await fetch("/api/ingestSchedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schedule, periodLabel, ...manifest }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error ?? `Could not start the schedule ingest (${res.status})`);
+      }
+
+      setScheduleMessage({
+        text:
+          `Queued Schedule ${schedule} for ${periodLabel}. Re-ingesting a quarter ` +
+          `replaces it rather than adding to it.`,
+        error: false,
+      });
+      trackRuns((data.runs ?? []) as TrackedRun[], "schedule");
+      form.reset();
+    } catch (error) {
+      // @vercel/blob discards the token route's response body, so a refusal
+      // arrives as the same opaque message whatever the reason. Name the
+      // causes rather than repeating it.
+      const detail = error instanceof Error ? error.message : "";
+      setScheduleMessage({
+        text:
+          file && detail.includes("client token")
+            ? `"${file.name}" was refused: it must be an .xlsx or .xlsm workbook under ${formatBytes(MAX_UPLOAD_BYTES)}`
+            : detail || "Could not ingest the workbook",
+        error: true,
+      });
+    } finally {
+      setIngestingSchedule(false);
+      setSchedulePercent(null);
     }
   }
 
@@ -1170,6 +1326,148 @@ export default function UploadPage() {
             </CardContent>
           </Card>
 
+          {/* The AER retail performance schedules: the numbers retailers report
+              to the regulator each quarter. A separate surface from the PDF
+              upload above because it authorises a different thing — a
+              spreadsheet, and a quarter that may legitimately be re-uploaded to
+              correct it. */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileSpreadsheet className="size-4" />
+                AER schedules
+              </CardTitle>
+              <CardDescription>
+                {aer?.notice
+                  ? aer.notice
+                  : aer && aer.observations > 0
+                    ? `${aer.observations.toLocaleString()} observation${
+                        aer.observations === 1 ? "" : "s"
+                      } from Schedule${aer.schedules.length === 1 ? "" : "s"} ${aer.schedules.join(", ")}` +
+                      `${aer.latestPeriod ? ` \u00b7 latest ${aer.latestPeriod}` : ""}`
+                    : "Retail performance reported to the AER each quarter. Upload a Schedule 2, 3 or 4 workbook."}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {aer && aer.observations > 0 && (
+                <>
+                  <div className="grid grid-cols-3 gap-3">
+                    <Stat label="Retailers" value={aer.retailers.toLocaleString()} />
+                    <Stat label="Metrics" value={aer.metrics.toLocaleString()} />
+                    <Stat label="Quarters" value={aer.periods.length.toLocaleString()} />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {/* Listed rather than counted: "which quarters" is the
+                        question a gap in a series raises. Newest first, and
+                        capped — years of quarters is a paragraph, and the
+                        recent ones are the ones being asked about. */}
+                    Ingested: {aer.periods.slice(0, 8).join(", ")}
+                    {aer.periods.length > 8 && ` + ${aer.periods.length - 8} earlier`}
+                  </p>
+                </>
+              )}
+
+              {/* Surfaced, never silent. A metric that first appears in the
+                  latest quarter is either new reporting or a rename that
+                  inference did not match to its predecessor — and an
+                  unmatched rename answers a question about a trend with half
+                  the history and a confident total. */}
+              {aer && aer.newMetrics.length > 0 && aer.latestPeriod && (
+                <p className="rounded border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-[11px] leading-snug text-amber-300">
+                  New in {aer.latestPeriod}: {aer.newMetrics.join(", ")}. Either new reporting or a
+                  renamed column that was not matched to the series it continues — worth a
+                  glance at the workbook.
+                </p>
+              )}
+
+              <form onSubmit={handleIngestSchedule} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="schedule-file">Workbook</Label>
+                  {/* .xlsm as well as .xlsx: the AER published Q3 2024-25
+                      macro-enabled while its neighbours were not. */}
+                  <Input id="schedule-file" name="schedule-file" type="file" accept=".xlsx,.xlsm" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="schedule-url">…or a link to one</Label>
+                  {/* Fetched server-side through the same checked fetcher an
+                      approved document request uses — every redirect hop
+                      re-validated against the resolved address. */}
+                  <Input
+                    id="schedule-url"
+                    name="schedule-url"
+                    type="url"
+                    placeholder="https://www.aer.gov.au/…/schedule-3.xlsx"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="schedule-number">Schedule</Label>
+                    <select
+                      id="schedule-number"
+                      name="schedule-number"
+                      defaultValue="3"
+                      className="h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+                    >
+                      {SCHEDULES.map((n) => (
+                        <option key={n} value={n} title={SCHEDULE_SUBJECTS[n]}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="schedule-period">Period</Label>
+                    {/* Typed in, not read from the file: the period is on the
+                        release page, and a quarter filed under the wrong label
+                        is wrong in a way no later query could detect. */}
+                    <Input
+                      id="schedule-period"
+                      name="schedule-period"
+                      placeholder="2023-24 Q3"
+                      required
+                    />
+                  </div>
+                </div>
+                {/* Which schedule is which, in the order the select lists
+                    them — the number on the AER's release page is all the
+                    workbook itself reliably says. */}
+                <ul className="space-y-0.5 text-[11px] text-muted-foreground">
+                  {SCHEDULES.map((n) => (
+                    <li key={n}>
+                      <span className="text-foreground">Schedule {n}</span> — {SCHEDULE_SUBJECTS[n]}
+                    </li>
+                  ))}
+                </ul>
+                <Button type="submit" className="w-full" disabled={ingestingSchedule}>
+                  {ingestingSchedule ? "Ingesting..." : "Ingest schedule"}
+                </Button>
+
+                {scheduleMessage && (
+                  <p
+                    className={`text-sm ${scheduleMessage.error ? "text-red-400" : "text-green-400"}`}
+                  >
+                    {scheduleMessage.text}
+                  </p>
+                )}
+
+                {schedulePercent !== null && (
+                  <div className="space-y-1">
+                    <div className="flex items-baseline justify-between gap-2 text-xs text-muted-foreground">
+                      <span>Transferring</span>
+                      <span className="shrink-0 tabular-nums">{Math.round(schedulePercent)}%</span>
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/15">
+                      <div
+                        className="h-full rounded-full bg-white transition-[width] duration-200"
+                        style={{ width: `${schedulePercent}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </form>
+            </CardContent>
+          </Card>
+
           {trackedRuns.length > 0 && (
             <Card>
               <CardHeader>
@@ -1610,18 +1908,38 @@ export default function UploadPage() {
                     <Fragment key={item.id}>
                     <TableRow>
                       <TableCell className="font-medium">
-                        {item.blobUrl ? (
-                          <a
-                            href={item.blobUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="hover:underline"
-                          >
-                            {item.name}
-                          </a>
-                        ) : (
-                          item.name
-                        )}
+                        <span className="flex items-center gap-2">
+                          {item.blobUrl ? (
+                            <a
+                              href={item.blobUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="min-w-0 truncate hover:underline"
+                            >
+                              {item.name}
+                            </a>
+                          ) : (
+                            <span className="min-w-0 truncate">{item.name}</span>
+                          )}
+                          {/* The parsed Markdown, one click away. This is the
+                              text every later step actually works from, so
+                              "why did this document yield no figures" is
+                              answered by reading it, not by guessing. */}
+                          {item.markdownUrl && (
+                            <a
+                              href={item.markdownUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className={cn(
+                                buttonVariants({ variant: "outline", size: "sm" }),
+                                "h-5 shrink-0 px-1.5 text-[10px] font-normal"
+                              )}
+                              title="Open the parsed Markdown — what figure extraction reads"
+                            >
+                              MD
+                            </a>
+                          )}
+                        </span>
                       </TableCell>
                       <TableCell className="text-right">{item.chunks}</TableCell>
                       <TableCell className="text-right">
@@ -1946,7 +2264,7 @@ function IngestProgress({
   onCancel,
 }: {
   fileName: string;
-  kind: "ingest" | "figures" | "processes";
+  kind: "ingest" | "figures" | "processes" | "schedule";
   progress: IngestRunProgress | undefined;
   retrying: boolean;
   onRetry: () => void;
@@ -1964,6 +2282,14 @@ function IngestProgress({
   const retryingStep = progress?.steps.find(
     (step) => (step.status === "running" || step.status === "failed") && step.attempt > 1
   );
+
+  // Only a completed run has an outcome; the server declines to read one for
+  // anything still in flight. Figures first, since a process result only makes
+  // sense in the light of how many figures there were to read.
+  const outcomes: ExtractionOutcome[] = [
+    progress?.outcome?.figureReport ? describeFigureRun(progress.outcome.figureReport) : null,
+    progress?.outcome?.processReport ? describeProcessRun(progress.outcome.processReport) : null,
+  ].filter((o): o is ExtractionOutcome => o !== null);
 
   let detail: string;
   if (!progress) {
@@ -2049,6 +2375,26 @@ function IngestProgress({
         {retryingStep && ` · retry ${retryingStep.attempt}`}
       </p>
 
+      {/* What the run actually produced. Printed on success, not only on
+          failure: a completed run that extracted nothing used to look exactly
+          like one that extracted everything, and the difference between "this
+          PDF has no diagrams" and "the parse wrote no markers so the PDF was
+          never opened" is the whole question. */}
+      {outcomes.map((outcome, i) => (
+        <div
+          key={i}
+          className={`space-y-1 rounded border px-2 py-1.5 text-[11px] leading-snug ${
+            outcome.empty
+              ? "border-amber-400/30 bg-amber-400/10 text-amber-300"
+              : "border-white/15 bg-white/5 text-muted-foreground"
+          }`}
+        >
+          <p className="font-medium">{outcome.headline}</p>
+          {outcome.detail.length > 0 && <p>{outcome.detail.join(" · ")}</p>}
+          {outcome.hint && <p className="opacity-90">{outcome.hint}</p>}
+        </div>
+      ))}
+
       {/* The runtime's own message for the failing step — the actual reason,
           rather than just which step it was. */}
       {progress?.error && (
@@ -2098,7 +2444,9 @@ function IngestProgress({
             ? "Press Figures on this document to try again — it clears any figures the failed run stored."
             : kind === "processes"
               ? "Press Processes on this document to try again — it replaces whatever the failed run stored."
-              : "Failed before the Markdown was saved — upload the file again to retry."}
+              : kind === "schedule"
+                ? "Ingest the workbook again — a re-ingest replaces that quarter rather than adding to it, so a part-written one is not left behind."
+                : "Failed before the Markdown was saved — upload the file again to retry."}
         </p>
       )}
     </div>

@@ -41,7 +41,11 @@ export async function reembedDocument(input: ReembedInput) {
   const { entityCount, relationCount } = await extractGraph(input.fileName, markdown);
 
   // Same tail as ingestPdf and resumeIngest — see the note on resumeIngest.
-  const figures = await extractFigures(input.fileName, blob.url, markdown);
+  const { figures, report: figureReport } = await extractFigures(
+    input.fileName,
+    blob.url,
+    markdown
+  );
   const { figureCount } = await embedFigures(input.fileName, blob, markdown, figures);
 
   await updateUploadAfterReembed(input.id, chunkCount, markdownUrl);
@@ -53,5 +57,6 @@ export async function reembedDocument(input: ReembedInput) {
     entities: entityCount,
     relations: relationCount,
     figures: figureCount,
+    figureReport,
   };
 }
