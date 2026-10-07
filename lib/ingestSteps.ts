@@ -1,3 +1,6 @@
+import type { FigureReport } from "@/lib/figures";
+import type { ProcessReport } from "@/lib/processes";
+
 // Shared vocabulary for reporting ingestion progress, used by
 // `GET /api/uploadStatus` and by the upload page that polls it.
 //
@@ -139,6 +142,19 @@ export interface IngestStepProgress {
   completedAt: string | null;
 }
 
+/**
+ * What a finished run produced, read from the workflow's own return value.
+ *
+ * Only ever populated for a completed run: `run.returnValue` polls until the
+ * run finishes, so asking for it mid-flight would hang the status poll. Both
+ * fields are optional because not every workflow produces both — a process
+ * re-scan has no figure report, and a graph rebuild has neither.
+ */
+export interface IngestRunOutcome {
+  figureReport?: FigureReport;
+  processReport?: ProcessReport;
+}
+
 export interface IngestRunProgress {
   runId: string;
   status: IngestRunStatus;
@@ -158,6 +174,11 @@ export interface IngestRunProgress {
    * PDF. False for a run that failed before the markdown existed.
    */
   resumable: boolean;
+  /**
+   * What the run produced, once it has completed. Null while it is running,
+   * and null for a run whose workflow returns neither report.
+   */
+  outcome: IngestRunOutcome | null;
   /** Which workflow produced these steps: "ingestPdf" or "resumeIngest". */
   workflowName: string | null;
   startedAt: string | null;

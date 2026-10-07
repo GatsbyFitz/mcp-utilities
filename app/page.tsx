@@ -24,6 +24,7 @@ import type { DocumentRequest } from "@/lib/documentRequests";
 import { formatFine, type ComplianceAction } from "@/lib/compliance";
 import { SCHEDULES, SCHEDULE_SUBJECTS, periodBounds } from "@/lib/aerPerformance";
 import type { DocumentFigure } from "@/lib/figures";
+import { describeFigureRun, describeProcessRun, type ExtractionOutcome } from "@/lib/extractionReport";
 import type { IncompleteIngestion } from "@/lib/ingestionRuns";
 import type { StrandedMarkdown } from "@/lib/strandedMarkdown";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -56,6 +57,12 @@ type KnowledgeBaseItem = {
   blobUrl: string | null;
   blobDownloadUrl: string | null;
   blobPath: string | null;
+  /**
+   * The converted Markdown. Worth having at hand: it is what figure
+   * extraction reads, so a document whose Markdown holds no `[Figure: …]`
+   * markers can never produce a figure, whatever the PDF contains.
+   */
+  markdownUrl: string | null;
   /** Figures indexed for this document; null when the count could not be read. */
   figures: number | null;
   /** Processes transcribed from those figures; null when not countable. */
@@ -1901,18 +1908,38 @@ export default function UploadPage() {
                     <Fragment key={item.id}>
                     <TableRow>
                       <TableCell className="font-medium">
-                        {item.blobUrl ? (
-                          <a
-                            href={item.blobUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="hover:underline"
-                          >
-                            {item.name}
-                          </a>
-                        ) : (
-                          item.name
-                        )}
+                        <span className="flex items-center gap-2">
+                          {item.blobUrl ? (
+                            <a
+                              href={item.blobUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="min-w-0 truncate hover:underline"
+                            >
+                              {item.name}
+                            </a>
+                          ) : (
+                            <span className="min-w-0 truncate">{item.name}</span>
+                          )}
+                          {/* The parsed Markdown, one click away. This is the
+                              text every later step actually works from, so
+                              "why did this document yield no figures" is
+                              answered by reading it, not by guessing. */}
+                          {item.markdownUrl && (
+                            <a
+                              href={item.markdownUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className={cn(
+                                buttonVariants({ variant: "outline", size: "sm" }),
+                                "h-5 shrink-0 px-1.5 text-[10px] font-normal"
+                              )}
+                              title="Open the parsed Markdown — what figure extraction reads"
+                            >
+                              MD
+                            </a>
+                          )}
+                        </span>
                       </TableCell>
                       <TableCell className="text-right">{item.chunks}</TableCell>
                       <TableCell className="text-right">
@@ -2256,6 +2283,14 @@ function IngestProgress({
     (step) => (step.status === "running" || step.status === "failed") && step.attempt > 1
   );
 
+  // Only a completed run has an outcome; the server declines to read one for
+  // anything still in flight. Figures first, since a process result only makes
+  // sense in the light of how many figures there were to read.
+  const outcomes: ExtractionOutcome[] = [
+    progress?.outcome?.figureReport ? describeFigureRun(progress.outcome.figureReport) : null,
+    progress?.outcome?.processReport ? describeProcessRun(progress.outcome.processReport) : null,
+  ].filter((o): o is ExtractionOutcome => o !== null);
+
   let detail: string;
   if (!progress) {
     detail = "Queued";
@@ -2339,6 +2374,26 @@ function IngestProgress({
         {detail}
         {retryingStep && ` · retry ${retryingStep.attempt}`}
       </p>
+
+      {/* What the run actually produced. Printed on success, not only on
+          failure: a completed run that extracted nothing used to look exactly
+          like one that extracted everything, and the difference between "this
+          PDF has no diagrams" and "the parse wrote no markers so the PDF was
+          never opened" is the whole question. */}
+      {outcomes.map((outcome, i) => (
+        <div
+          key={i}
+          className={`space-y-1 rounded border px-2 py-1.5 text-[11px] leading-snug ${
+            outcome.empty
+              ? "border-amber-400/30 bg-amber-400/10 text-amber-300"
+              : "border-white/15 bg-white/5 text-muted-foreground"
+          }`}
+        >
+          <p className="font-medium">{outcome.headline}</p>
+          {outcome.detail.length > 0 && <p>{outcome.detail.join(" · ")}</p>}
+          {outcome.hint && <p className="opacity-90">{outcome.hint}</p>}
+        </div>
+      ))}
 
       {/* The runtime's own message for the failing step — the actual reason,
           rather than just which step it was. */}

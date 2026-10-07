@@ -353,3 +353,56 @@ export function figurePagesFrom(markdown: string): number[] {
 
   return [...pages].sort((a, b) => a - b).slice(0, MAX_FIGURE_PAGES);
 }
+
+// ---------------------------------------------------------------------------
+// What a figure extraction actually did
+// ---------------------------------------------------------------------------
+// Every number here was already being computed and then thrown away. The run
+// reported "3 figures" or, far more often, nothing at all — and "nothing at
+// all" has at least four distinct causes that look identical from outside:
+// the Markdown named no figure pages, the pages rendered but the model found
+// nothing, it found things and they were all page furniture, or every page
+// threw. Only the first is fixed by re-ingesting, and only the third means the
+// document genuinely has no figures. Guessing between them cost an afternoon.
+export interface FigureReport {
+  /**
+   * Pages the stored Markdown marks with `[Figure:`. **This is the gate.**
+   * Zero here means no page was ever rendered: the PDF was never looked at,
+   * because that run's parse wrote no markers. Re-extracting from the same
+   * Markdown will return zero again, however many diagrams the PDF contains.
+   */
+  markedPages: number;
+  /** Pages actually rendered and shown to the model, after MAX_FIGURE_PAGES. */
+  pagesScanned: number;
+  /** Pages that threw while rendering or parsing and were skipped. */
+  pagesFailed: number;
+  /** Figures the model proposed, before any filtering. */
+  proposed: number;
+  /** Dropped as page furniture — a logo, a header rule, a watermark. */
+  droppedDecorative: number;
+  /** Dropped for an empty description, which nothing could be searched by. */
+  droppedEmpty: number;
+  /** Kept, but with a box the model mislocated, so the whole page was cropped. */
+  wholePageFallbacks: number;
+  /** Figures stored. */
+  kept: number;
+}
+
+/** What `extractFigures` hands back: the figures, and what happened. */
+export interface FigureOutcome {
+  figures: ExtractedFigure[];
+  report: FigureReport;
+}
+
+export function emptyFigureReport(markedPages = 0): FigureReport {
+  return {
+    markedPages,
+    pagesScanned: 0,
+    pagesFailed: 0,
+    proposed: 0,
+    droppedDecorative: 0,
+    droppedEmpty: 0,
+    wholePageFallbacks: 0,
+    kept: 0,
+  };
+}

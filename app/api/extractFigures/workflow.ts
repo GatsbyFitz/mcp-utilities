@@ -47,8 +47,12 @@ export async function reextractFigures(input: ReextractFiguresInput) {
     await recordMarkdownUrl(input.id, markdownUrl);
   }
 
-  const figures = await extractFigures(input.fileName, blob.url, markdown);
+  const { figures, report: figureReport } = await extractFigures(
+    input.fileName,
+    blob.url,
+    markdown
+  );
   const { figureCount } = await embedFigures(input.fileName, blob, markdown, figures);
 
-  return { fileName: input.fileName, figures: figureCount };
+  return { fileName: input.fileName, figures: figureCount, figureReport };
 }
