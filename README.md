@@ -219,6 +219,8 @@ Everything below is registered in `app/mcp/tools/index.ts`, `app/mcp/prompts/ind
 
 **`search_graph`** — Searches the Neo4j knowledge graph for entities and relationships extracted from uploaded documents. Seeds from a vector similarity search over entity names, walks 1–2 hops of `[:RELATES]` edges, then pulls supporting document excerpts for the closest-hop relationships. Returns relationship paths (`[R1]`, `[R2]`, …) plus excerpts (`[1]`, `[2]`, …) with citations. Use for relational questions — obligations or dependencies between parties, how concepts connect, definitions spanning documents.
 
+**`find_reference`** — Routes a question to a live reference page and returns its URL, for sources kept current rather than indexed: API documentation and specifications, where being out of date is the worst failure a copy can have. What is indexed is a *descriptor* of what each page covers, not its text, so the pointer stays good across releases that change every endpoint behind it. The caller fetches the page itself — the server knows what exists and what is relevant, the client knows how to read it.
+
 **`echo`** — Trivial diagnostic tool that echoes back a message. Useful for confirming the MCP connection is alive.
 
 Both search tools:
@@ -283,7 +285,7 @@ Required in `.env.local` (gitignored): `UPSTASH_VECTOR_REST_URL`/`_TOKEN`, `NEO4
 
 ## Provisioning done by hand
 
-Nothing in this repo creates schema. Four things must already exist in the provisioned services, and each fails differently if it does not:
+Nothing in this repo creates schema. Five things must already exist in the provisioned services, and each fails differently if it does not:
 
 | What | Created by | Symptom if missing |
 | --- | --- | --- |
@@ -291,6 +293,7 @@ Nothing in this repo creates schema. Four things must already exist in the provi
 | Neo4j `entity_names` vector index | manually | `search_graph` returns nothing, with no error |
 | Neon `document_requests` table | **[db/document_requests.sql](db/document_requests.sql)** | the review queue reads empty with a notice; `request_document` refuses and says which file to run |
 | Neon `ingestion_runs` table | **[db/ingestion_runs.sql](db/ingestion_runs.sql)** | ingestion still works, but an interrupted one cannot be found again — the unfinished list reads empty with a notice, and recovery falls back to the Blob scan |
+| Neon `reference_sources` table | **[db/reference_sources.sql](db/reference_sources.sql)** | the reference card reads empty with a notice; `find_reference` refuses and names the file to run |
 
 `document_requests` is the easy one to miss, because the failure surfaces at the far end of the system — inside an MCP tool call from a model, rather than anywhere near the database. Run it once and the queue works.
 
