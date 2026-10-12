@@ -13,7 +13,8 @@
     "verify:processes": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-processes.mjs",
     "verify:kb-documents": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-kb-documents.mjs",
     "verify:aer": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-aer.mjs",
-    "verify:extraction-report": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-extraction-report.mjs"
+    "verify:extraction-report": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-extraction-report.mjs",
+    "verify:references": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-references.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.10",
