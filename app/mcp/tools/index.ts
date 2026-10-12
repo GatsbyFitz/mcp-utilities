@@ -3,6 +3,7 @@ import { registerSearchDocsTool } from "./search-docs";
 import { registerSearchGraphTool } from "./search-graph";
 import { registerRequestDocumentTool } from "./request-document";
 import { registerSearchComplianceTool } from "./search-compliance";
+import { registerFindReferenceTool } from "./find-reference";
 
 export function registerAllTools(server: any): void {
   registerEchoTool(server);
@@ -10,4 +11,5 @@ export function registerAllTools(server: any): void {
   registerSearchGraphTool(server);
   registerRequestDocumentTool(server);
   registerSearchComplianceTool(server);
+  registerFindReferenceTool(server);
 }
