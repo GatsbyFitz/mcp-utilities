@@ -223,6 +223,8 @@ Everything below is registered in `app/mcp/tools/index.ts`, `app/mcp/prompts/ind
 
 **`search_aer_performance`** — Searches `aer_performance`: what energy retailers reported to the AER each quarter in Schedules 2, 3 and 4 (customer numbers, complaints, disconnections, hardship). Filters by schedule, retailer, jurisdiction, fuel, metric and period, and totals the match set with window functions so the count and sum stay exact when the row list is capped. Every response carries the vocabulary actually present, including each metric's past headings, so a filter written with last quarter's wording is correctable in one retry instead of reading as "no data". Use it for numbers about the market; `search_compliance` for enforcement actions; `search_docs` for what the rules require.
 
+**`find_reference`** — Routes a question to a live reference page and returns its URL, for sources kept current rather than indexed: API documentation and specifications, where being out of date is the worst failure a copy can have. What is indexed is a *descriptor* of what each page covers, not its text, so the pointer stays good across releases that change every endpoint behind it. The caller fetches the page itself — the server knows what exists and what is relevant, the client knows how to read it.
+
 **`echo`** — Trivial diagnostic tool that echoes back a message. Useful for confirming the MCP connection is alive.
 
 Both search tools:
@@ -287,7 +289,7 @@ Required in `.env.local` (gitignored): `UPSTASH_VECTOR_REST_URL`/`_TOKEN`, `NEO4
 
 ## Provisioning done by hand
 
-Nothing in this repo creates schema. Six things must already exist in the provisioned services, and each fails differently if it does not:
+Nothing in this repo creates schema. Seven things must already exist in the provisioned services, and each fails differently if it does not:
 
 | What | Created by | Symptom if missing |
 | --- | --- | --- |
@@ -297,6 +299,7 @@ Nothing in this repo creates schema. Six things must already exist in the provis
 | Neon `ingestion_runs` table | **[db/ingestion_runs.sql](db/ingestion_runs.sql)** | ingestion still works, but an interrupted one cannot be found again — the unfinished list reads empty with a notice, and recovery falls back to the Blob scan |
 | Neon `compliance_actions` table | **[db/compliance_actions.sql](db/compliance_actions.sql)** | the Notion sync fails at its last stage and says so; `search_compliance` refuses and names the file to run |
 | Neon `aer_performance`/`aer_metrics` tables | **[db/aer_performance.sql](db/aer_performance.sql)** | a schedule ingest fails at its last step; `search_aer_performance` and the AER card refuse and name the file to run |
+| Neon `reference_sources` table | **[db/reference_sources.sql](db/reference_sources.sql)** | the reference card reads empty with a notice; `find_reference` refuses and names the file to run |
 
 `document_requests` is the easy one to miss, because the failure surfaces at the far end of the system — inside an MCP tool call from a model, rather than anywhere near the database. Run it once and the queue works.
 

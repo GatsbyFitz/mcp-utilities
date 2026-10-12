@@ -268,50 +268,6 @@ export async function downloadToBlob(
   };
 }
 
-/**
- * A page's bytes as text, for something read rather than stored.
- *
- * Shares `fetchFollowingRedirects` with the document path deliberately, which
- * is the whole reason it lives in this file: the resolved-address check runs
- * on every redirect hop. A reference URL comes from a server-side list rather
- * than from a model, so the first hop is trusted — but nothing constrains
- * where that host redirects to, and an open redirector on a trusted host is
- * exactly the case a name-keyed allowlist does not cover.
- *
- * Caps bytes while reading rather than after: a documentation site can serve
- * a great deal more than anyone wants in a tool response.
- */
-export async function fetchTextFromUrl(
-  url: string,
-  maxBytes: number
-): Promise<{ body: string; contentType: string; truncated: boolean }> {
-  const res = await fetchFollowingRedirects(url);
-  const contentType = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-
-  if (!res.body) throw new DocumentFetchError("Source returned an empty response");
-
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let seen = 0;
-  let truncated = false;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    if (seen + value.byteLength > maxBytes) {
-      chunks.push(value.subarray(0, maxBytes - seen));
-      truncated = true;
-      await reader.cancel();
-      break;
-    }
-    chunks.push(value);
-    seen += value.byteLength;
-  }
-
-  return { body: Buffer.concat(chunks).toString("utf8"), contentType, truncated };
-}
-
 /** The PDF path, unchanged for its callers. */
 export function downloadPdfToBlob(url: string, fileName: string): Promise<UploadedFile> {
   return downloadToBlob(url, fileName, PDF_KIND);

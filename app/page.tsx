@@ -2,7 +2,7 @@
 
 import { Fragment, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon, PlayCircle, FileSearch, Scale, Workflow, FileSpreadsheet } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, LogOut, CheckCircle2, AlertCircle, Loader2, RotateCw, Share2, Inbox, Check, X, Image as ImageIcon, PlayCircle, FileSearch, Scale, Workflow, FileSpreadsheet, Link2 } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { upload } from "@vercel/blob/client";
 import {
@@ -23,6 +23,7 @@ import {
 import type { DocumentRequest } from "@/lib/documentRequests";
 import { formatFine, type ComplianceAction } from "@/lib/compliance";
 import { SCHEDULES, SCHEDULE_SUBJECTS, periodBounds } from "@/lib/aerPerformance";
+import { nameFromUrl, type ReferenceSource } from "@/lib/references";
 import type { DocumentFigure } from "@/lib/figures";
 import { describeFigureRun, describeProcessRun, type ExtractionOutcome } from "@/lib/extractionReport";
 import type { IncompleteIngestion } from "@/lib/ingestionRuns";
@@ -248,6 +249,16 @@ export default function UploadPage() {
   const [scanningMarkdown, setScanningMarkdown] = useState(false);
   const [restartingName, setRestartingName] = useState<string | null>(null);
   const [syncingCompliance, setSyncingCompliance] = useState(false);
+  // Reference pages: URLs the index points at but never holds. Submitted like
+  // a document, except nothing is uploaded and nothing is fetched — the
+  // summary is what gets embedded.
+  const [references, setReferences] = useState<ReferenceSource[]>([]);
+  const [referencesNotice, setReferencesNotice] = useState<string | null>(null);
+  const [indexingReference, setIndexingReference] = useState(false);
+  const [removingReference, setRemovingReference] = useState<string | null>(null);
+  const [referenceMessage, setReferenceMessage] = useState<{ text: string; error: boolean } | null>(
+    null
+  );
   // The AER schedules. One card: what has been ingested, and the upload that
   // adds a quarter to it.
   const [aer, setAer] = useState<AerSummary | null>(null);
@@ -299,6 +310,20 @@ export default function UploadPage() {
       setAer(data as AerSummary);
     } catch (error) {
       console.error("Error fetching the AER summary:", error);
+    }
+  }, []);
+
+  const loadReferences = useCallback(async () => {
+    try {
+      const res = await fetch("/api/indexReference", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Reference list failed: ${res.status}`);
+      }
+      setReferences((data.items ?? []) as ReferenceSource[]);
+      setReferencesNotice((data.notice as string) ?? null);
+    } catch (error) {
+      console.error("Error fetching references:", error);
     }
   }, []);
 
@@ -370,6 +395,10 @@ export default function UploadPage() {
   useEffect(() => {
     loadAer();
   }, [loadAer]);
+
+  useEffect(() => {
+    loadReferences();
+  }, [loadReferences]);
 
   // Recover runs from a reload mid-ingestion. Anything the runtime has since
   // forgotten comes back as "unknown" and simply stops being polled.
@@ -719,6 +748,89 @@ export default function UploadPage() {
     } finally {
       setIngestingSchedule(false);
       setSchedulePercent(null);
+    }
+  }
+
+  /**
+   * Register a URL as a reference page.
+   *
+   * The counterpart to uploading a PDF, and deliberately not the same thing:
+   * no bytes move and nothing is fetched. What is indexed is the summary —
+   * what this page *covers* — so `find_reference` can route a question to it
+   * and the client reads the live page itself.
+   *
+   * The summary is typed rather than scraped because this server often cannot
+   * reach the pages worth referencing: a client-rendered docs site returns an
+   * empty shell to a server-side fetch, and a descriptor built from that would
+   * describe nothing while looking indexed.
+   */
+  async function handleIndexReference(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const field = (n: string) =>
+      (form.elements.namedItem(n) as HTMLInputElement | HTMLTextAreaElement).value.trim();
+
+    const url = field("reference-url");
+    const title = field("reference-title");
+    const summary = field("reference-summary");
+    const keyTerms = field("reference-terms")
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+
+    if (!url || !title || !summary) {
+      setReferenceMessage({
+        text: "A URL, a title and a summary are all required — the summary is what questions are matched against.",
+        error: true,
+      });
+      return;
+    }
+
+    setIndexingReference(true);
+    setReferenceMessage(null);
+    try {
+      const res = await fetch("/api/indexReference", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, title, summary, keyTerms, name: nameFromUrl(url) }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error ?? `Could not index the reference (${res.status})`);
+      }
+      setReferenceMessage({ text: `Indexed "${data.title}".`, error: false });
+      form.reset();
+      loadReferences();
+    } catch (error) {
+      setReferenceMessage({
+        text: error instanceof Error ? error.message : "Could not index the reference",
+        error: true,
+      });
+    } finally {
+      setIndexingReference(false);
+    }
+  }
+
+  async function handleRemoveReference(name: string, title: string) {
+    setRemovingReference(name);
+    setReferenceMessage(null);
+    try {
+      const res = await fetch(`/api/indexReference?name=${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error ?? `Could not remove the reference (${res.status})`);
+      }
+      setReferenceMessage({ text: `Removed "${title}".`, error: false });
+      loadReferences();
+    } catch (error) {
+      setReferenceMessage({
+        text: error instanceof Error ? error.message : "Could not remove the reference",
+        error: true,
+      });
+    } finally {
+      setRemovingReference(null);
     }
   }
 
@@ -1463,6 +1575,128 @@ export default function UploadPage() {
                       />
                     </div>
                   </div>
+                )}
+              </form>
+            </CardContent>
+          </Card>
+
+          {/* Reference pages: the other way knowledge gets in. A document is
+              uploaded and read; a reference is pointed at and left where it
+              is, because for API documentation being out of date is the worst
+              failure a copy can have. */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Link2 className="size-4" />
+                Reference pages
+              </CardTitle>
+              <CardDescription>
+                {referencesNotice
+                  ? referencesNotice
+                  : "Live URLs the server points at but never stores. The summary is " +
+                    "what questions are matched against — write it as what the page " +
+                    "answers, not as a précis of it."}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {references.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  {references.map((reference) => (
+                    <div
+                      key={reference.name}
+                      className="flex items-start justify-between gap-2 rounded-md border p-2"
+                    >
+                      <div className="min-w-0">
+                        <a
+                          href={reference.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block truncate text-sm font-medium hover:underline"
+                          title={reference.url}
+                        >
+                          {reference.title}
+                        </a>
+                        <p className="line-clamp-2 text-xs text-muted-foreground">
+                          {reference.summary}
+                        </p>
+                        {/* A row with no embedding is invisible to the tool.
+                            Said plainly rather than left to be inferred from
+                            a search that quietly never returns it. */}
+                        {!reference.indexedAt && (
+                          <p className="text-xs text-amber-400">
+                            Not indexed — submit it again to embed the summary.
+                          </p>
+                        )}
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0"
+                        onClick={() => handleRemoveReference(reference.name, reference.title)}
+                        disabled={removingReference === reference.name}
+                      >
+                        {removingReference === reference.name ? (
+                          <Loader2 className="animate-spin" />
+                        ) : (
+                          <Trash2 />
+                        )}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <form onSubmit={handleIndexReference} className="space-y-3">
+                <div className="space-y-2">
+                  <Label htmlFor="reference-url">URL</Label>
+                  <Input
+                    id="reference-url"
+                    name="reference-url"
+                    type="url"
+                    placeholder="https://dev.aemo.com.au/api-docs"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="reference-title">Title</Label>
+                  <Input
+                    id="reference-title"
+                    name="reference-title"
+                    placeholder="AEMO Developer Portal — API documentation"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="reference-summary">What it answers</Label>
+                  {/* Nothing is fetched, so this is the whole basis for
+                      matching. A page submitted without one would never be
+                      found, which is worse than not adding it. */}
+                  <textarea
+                    id="reference-summary"
+                    name="reference-summary"
+                    rows={3}
+                    placeholder="Endpoints, parameters and schemas for submitting NEM energy, FCAS and MNSP bids…"
+                    className="w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="reference-terms">Key terms</Label>
+                  {/* These carry the sparse half of the hybrid index, which is
+                      what matches an opaque token like MSATS that semantic
+                      similarity blurs into its neighbours. */}
+                  <Input
+                    id="reference-terms"
+                    name="reference-terms"
+                    placeholder="MSATS, aseXML, NMI (comma separated)"
+                  />
+                </div>
+                <Button type="submit" className="w-full" disabled={indexingReference}>
+                  {indexingReference ? "Indexing..." : "Add reference"}
+                </Button>
+                {referenceMessage && (
+                  <p
+                    className={`text-sm ${referenceMessage.error ? "text-red-400" : "text-green-400"}`}
+                  >
+                    {referenceMessage.text}
+                  </p>
                 )}
               </form>
             </CardContent>
