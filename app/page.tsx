@@ -15,6 +15,7 @@ import {
   FIGURE_STEPS,
   INGEST_STEPS,
   PROCESS_STEPS,
+  REFERENCE_STEPS,
   isTerminalRunStatus,
   type IngestRunProgress,
 } from "@/lib/ingestSteps";
@@ -103,7 +104,7 @@ type TrackedRun = {
    * recovered from an older sessionStorage entry predate it; those read as
    * ingestion, which is what they were.
    */
-  kind?: "ingest" | "figures" | "processes";
+  kind?: "ingest" | "figures" | "processes" | "reference";
 };
 
 // Run IDs are not persisted server-side, so they survive a reload only as far
@@ -151,9 +152,10 @@ function Stat({ label, value }: { label: string; value: string }) {
  * before the first poll lands. Getting this wrong makes a short run flash the
  * wrong number of segments and then collapse.
  */
-function stepsForKind(kind: "ingest" | "figures" | "processes") {
+function stepsForKind(kind: "ingest" | "figures" | "processes" | "reference") {
   if (kind === "figures") return FIGURE_STEPS;
   if (kind === "processes") return PROCESS_STEPS;
+  if (kind === "reference") return REFERENCE_STEPS;
   return INGEST_STEPS;
 }
 
@@ -386,6 +388,9 @@ export default function UploadPage() {
             }
             refreshKnowledgeBase();
             loadIncomplete();
+            // A reference only becomes searchable at its last step, so the
+            // list's "Not indexed" flags are only correct after this.
+            loadReferences();
             return;
           }
         }
@@ -403,7 +408,7 @@ export default function UploadPage() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [trackedRuns, refreshKnowledgeBase, loadIncomplete]);
+  }, [trackedRuns, refreshKnowledgeBase, loadIncomplete, loadReferences]);
 
   // Retries a failed ingestion from the Markdown it already persisted. The
   // runtime cannot resume a failed run in place, so the server starts a fresh
@@ -642,8 +647,14 @@ export default function UploadPage() {
       if (!res.ok || !data?.success) {
         throw new Error(data?.error ?? `Could not index the reference (${res.status})`);
       }
-      setReferenceMessage({ text: `Indexed "${data.title}".`, error: false });
+      setReferenceMessage({
+        text: `Queued "${data.title}" — it becomes searchable when indexing finishes.`,
+        error: false,
+      });
       form.reset();
+      // The row exists immediately as unindexed; the run is what makes it
+      // searchable, so it is tracked on the same card as every other pipeline.
+      trackRuns((data.runs ?? []) as TrackedRun[], "reference");
       loadReferences();
     } catch (error) {
       setReferenceMessage({
@@ -2180,7 +2191,7 @@ function IngestProgress({
   onCancel,
 }: {
   fileName: string;
-  kind: "ingest" | "figures" | "processes";
+  kind: "ingest" | "figures" | "processes" | "reference";
   progress: IngestRunProgress | undefined;
   retrying: boolean;
   onRetry: () => void;
@@ -2332,7 +2343,9 @@ function IngestProgress({
             ? "Press Figures on this document to try again — it clears any figures the failed run stored."
             : kind === "processes"
               ? "Press Processes on this document to try again — it replaces whatever the failed run stored."
-              : "Failed before the Markdown was saved — upload the file again to retry."}
+              : kind === "reference"
+                ? "The reference is saved but not searchable. Submit it again to re-index it."
+                : "Failed before the Markdown was saved — upload the file again to retry."}
         </p>
       )}
     </div>
