@@ -4,6 +4,7 @@ import { registerSearchGraphTool } from "./search-graph";
 import { registerRequestDocumentTool } from "./request-document";
 import { registerSearchComplianceTool } from "./search-compliance";
 import { registerFindReferenceTool } from "./find-reference";
+import { registerAddReferenceTool } from "./add-reference";
 
 export function registerAllTools(server: any): void {
   registerEchoTool(server);
@@ -12,4 +13,5 @@ export function registerAllTools(server: any): void {
   registerRequestDocumentTool(server);
   registerSearchComplianceTool(server);
   registerFindReferenceTool(server);
+  registerAddReferenceTool(server);
 }

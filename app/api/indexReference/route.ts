@@ -1,15 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
-import { embed } from "ai";
 import { vectorIndex } from "@/lib/vector";
-import { sparseVector } from "@/lib/sparse";
-import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/embedding";
 import {
   MAX_REFERENCE_KEY_TERMS,
   MAX_REFERENCE_SUMMARY,
   MISSING_REFERENCES_MESSAGE,
-  REFERENCE_KIND,
-  descriptorText,
   isDuplicateReferenceUrl,
   isMissingReferenceTable,
   nameFromUrl,
@@ -18,12 +13,8 @@ import {
   referenceNameProblem,
   referenceProblem,
 } from "@/lib/references";
-import {
-  deleteReference,
-  listReferences,
-  markReferenceIndexed,
-  upsertReference,
-} from "@/lib/referenceStore";
+import { deleteReference, listReferences } from "@/lib/referenceStore";
+import { indexReference } from "@/lib/referenceIndex";
 
 /**
  * Reference sources — URLs the index points at but never holds.
@@ -96,45 +87,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    // Row first, vector second, `indexed_at` last. If the embedding fails the
-    // row survives as unindexed, which is visible and re-runnable; the other
-    // order would leave a vector pointing at a reference that does not exist.
-    await upsertReference({ name, url, title, summary, keyTerms });
-
-    const text = descriptorText({ title, summary, keyTerms });
-    const { embedding } = await embed({
-      model: EMBEDDING_MODEL,
-      value: `title: ${title} | text: ${text}`,
-      providerOptions: {
-        google: { outputDimensionality: EMBEDDING_DIMENSIONS, taskType: "RETRIEVAL_DOCUMENT" },
-      },
-    });
-
-    await vectorIndex.upsert([
-      {
-        id: referenceId(name),
-        vector: embedding,
-        // The index is hybrid: a dense-only upsert is rejected outright and
-        // nothing is written. Unprefixed text, as every other writer uses.
-        sparseVector: sparseVector(text),
-        metadata: {
-          // Mirrors a chunk's shape so a citation needs no special case, even
-          // though a reference carries no page.
-          text: summary,
-          title,
-          source: name,
-          blobUrl: url,
-          pageStart: null,
-          pageEnd: null,
-          kind: REFERENCE_KIND,
-          url,
-          keyTerms,
-        },
-      },
-    ]);
-
-    await markReferenceIndexed(name);
-
+    await indexReference({ name, url, title, summary, keyTerms });
     return NextResponse.json({ success: true, name, url, title });
   } catch (error) {
     if (isMissingReferenceTable(error)) {
