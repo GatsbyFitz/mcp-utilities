@@ -48,6 +48,17 @@ export const MARKDOWN_MODEL = process.env.MARKDOWN_MODEL || "anthropic/claude-so
 export const EXTRACTION_MODEL = "google/gemini-3.5-flash-lite";
 
 /**
+ * Reranking, on the query side. Shared by `search_docs` and `find_reference`
+ * so retrieval is ordered the same way wherever it happens.
+ *
+ * It earns its place in `find_reference` for a reason worth recording: the
+ * hybrid index's own score is reciprocal-rank fusion, which measures *rank*,
+ * not relevance, and so cannot tell a good match from a bad one. The
+ * reranker's score can, which is what makes a relevance floor possible at all.
+ */
+export const RERANK_MODEL = "cohere/rerank-v3.5";
+
+/**
  * Both providers take the PDF **inline**, base64'd into the request body, so
  * the binding limit is request size — and they do not agree on it:
  *

@@ -1,14 +1,19 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
-import { embed } from "ai";
+import { embed, rerank } from "ai";
 import { WeightingStrategy } from "@upstash/vector";
 import { vectorIndex } from "@/lib/vector";
 import { sparseVector } from "@/lib/sparse";
 import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/embedding";
+import { RERANK_MODEL } from "@/lib/models";
 import {
   MAX_REFERENCE_RESULTS,
+  MIN_REFERENCE_RELEVANCE,
   MISSING_REFERENCES_MESSAGE,
+  REFERENCE_CANDIDATES,
   REFERENCE_KIND,
+  descriptorText,
+  relevantReferences,
   isMissingReferenceTable,
   type ReferenceMatch,
 } from "@/lib/references";
@@ -34,7 +39,11 @@ import { listReferences } from "@/lib/referenceStore";
 
 function renderMatch(match: ReferenceMatch, n: number): string {
   const terms = match.keyTerms.length ? `\nCovers: ${match.keyTerms.join(", ")}` : "";
-  return `[${n}] ${match.title}\n${match.url}\n${match.summary}${terms}`;
+  // The relevance is printed, not just returned. Per the mcp-tools rule the
+  // text block is what a model reads and acts on, and this tool's instruction
+  // is "go and open this" — so a weak match has to be able to announce itself
+  // as weak, rather than looking identical to a strong one.
+  return `[${n}] ${match.title} (relevance ${match.score.toFixed(3)})\n${match.url}\n${match.summary}${terms}`;
 }
 
 export function registerFindReferenceTool(server: McpServer): void {
@@ -83,7 +92,7 @@ export function registerFindReferenceTool(server: McpServer): void {
           // stops matching. Key terms like "MSATS" live or die on this half.
           sparseVector: sparseVector(question),
           weightingStrategy: WeightingStrategy.IDF,
-          topK: MAX_REFERENCE_RESULTS,
+          topK: REFERENCE_CANDIDATES,
           filter: `kind = '${REFERENCE_KIND}'`,
           includeMetadata: true,
           includeVectors: false,
@@ -95,7 +104,7 @@ export function registerFindReferenceTool(server: McpServer): void {
         const names = (Array.isArray(matches) ? matches : []).map((m) =>
           String((m.metadata as { source?: unknown })?.source ?? "")
         );
-        const scores = new Map(
+        const retrievalScores = new Map(
           (Array.isArray(matches) ? matches : []).map((m) => [
             String((m.metadata as { source?: unknown })?.source ?? ""),
             m.score,
@@ -104,12 +113,15 @@ export function registerFindReferenceTool(server: McpServer): void {
 
         const all = await listReferences();
         const byName = new Map(all.map((r) => [r.name, r]));
-        const found: ReferenceMatch[] = names
+        const candidates: ReferenceMatch[] = names
           .map((n) => byName.get(n))
           .filter((r): r is NonNullable<typeof r> => r !== undefined)
-          .map((r) => ({ ...r, score: scores.get(r.name) ?? 0 }));
+          // The hybrid score, kept only so the reranked score can be compared
+          // against it. It is reciprocal-rank fusion — a rank, not a relevance
+          // — and is never what decides whether a page is offered.
+          .map((r) => ({ ...r, score: retrievalScores.get(r.name) ?? 0 }));
 
-        if (found.length === 0) {
+        if (candidates.length === 0) {
           // "Nothing matched" and "nothing is registered" must never read
           // alike: the first is an answer, the second is a setup gap.
           const text = all.length
@@ -118,6 +130,54 @@ export function registerFindReferenceTool(server: McpServer): void {
             : "No reference pages are registered yet, so there is nothing to " +
               "point at. This is not a statement about what documentation exists.";
           return { content: [{ type: "text" as const, text }], structuredContent: { question, references: [] } };
+        }
+
+        // Rerank, exactly as search_docs does, and for a sharper reason here.
+        // Retrieval decides *which* descriptors come back; only the reranker
+        // produces a score that says whether any of them actually answers the
+        // question. No capping as search_docs needs: a descriptor is bounded by
+        // MAX_REFERENCE_SUMMARY, orders of magnitude under the rerank limit.
+        // The same text that was embedded is the text that gets judged.
+        const { ranking } = await rerank({
+          model: RERANK_MODEL,
+          query: question,
+          documents: candidates.map((c) => descriptorText(c)),
+          topN: Math.min(MAX_REFERENCE_RESULTS, candidates.length),
+        });
+
+        const ranked = ranking.map((r) => ({
+          ...candidates[r.originalIndex],
+          score: r.score,
+          retrievalScore: candidates[r.originalIndex].score,
+        }));
+        const found = relevantReferences(ranked);
+
+        if (found.length === 0) {
+          // The third state, and the one this tool previously could not
+          // express: pages are registered, retrieval returned some, and none
+          // of them covers the question. Saying so beats handing over the
+          // nearest row and telling the caller to go and read it.
+          const best = ranked[0];
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `No registered reference covers "${question}" — the closest, ` +
+                  `"${best.title}", scored ${best.score.toFixed(3)} against a floor of ` +
+                  `${MIN_REFERENCE_RELEVANCE}. This says nothing about whether such ` +
+                  `documentation exists, only that none is registered here. ` +
+                  `Registered references:\n` +
+                  all.map((r) => `- ${r.title} — ${r.url}`).join("\n"),
+              },
+            ],
+            structuredContent: {
+              question,
+              references: [],
+              bestRejected: { name: best.name, title: best.title, score: best.score },
+              floor: MIN_REFERENCE_RELEVANCE,
+            },
+          };
         }
 
         return {
@@ -140,6 +200,10 @@ export function registerFindReferenceTool(server: McpServer): void {
               summary: r.summary,
               keyTerms: r.keyTerms,
               score: r.score,
+              // Kept distinct on purpose: `score` is the reranker's relevance
+              // and is what the floor is applied to; this is the fused
+              // retrieval rank it arrived with.
+              retrievalScore: r.retrievalScore,
             })),
           },
         };
