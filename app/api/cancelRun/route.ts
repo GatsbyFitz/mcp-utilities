@@ -9,7 +9,7 @@ import { WorkflowRunNotFoundError } from "workflow/internal/errors";
  * `run.cancel()` records a `run_cancelled` event on the run's journal, so this
  * is cooperative rather than a kill: the run stops at the next step boundary
  * and a step already executing finishes and is paid for. Cancelling during a
- * Gemini parse does not stop that parse.
+ * PDF→Markdown parse does not stop that parse.
  *
  * Nothing is rolled back either. A cancelled ingestion can leave Markdown in
  * Blob, chunks in Upstash, edges in Neo4j and a row in `ingestion_runs` with no

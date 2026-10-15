@@ -1,4 +1,5 @@
 import { FatalError } from "workflow";
+import { EXTRACTION_MODEL } from "@/lib/models";
 import { generateText, Output } from "ai";
 import * as z from "zod/v4";
 import { v4 as uuidv4 } from "uuid";
@@ -146,7 +147,7 @@ export async function extractFigures(
       const pagePng = Buffer.from(full.asPNG());
 
       const { output } = await generateText({
-        model: "google/gemini-3.5-flash-lite",
+        model: EXTRACTION_MODEL,
         output: Output.object({ schema: FigureSchema }),
         messages: [
           {

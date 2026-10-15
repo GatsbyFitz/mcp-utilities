@@ -31,7 +31,7 @@ export interface ResumePoint {
  * findable by document name with no handle on the run at all.
  *
  * Either way its presence is exactly what makes a stalled run resumable: past
- * this point the expensive Gemini PDF→Markdown parse never has to run again. A
+ * this point the expensive PDF→Markdown parse never has to run again. A
  * run that failed before it has no markdown to reuse.
  */
 export async function markResumePoint(

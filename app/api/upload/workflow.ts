@@ -16,7 +16,7 @@ export async function ingestPdf(input: IngestInput) {
   const blob = input.blob;
   const markdown = await createMarkdown(blob.url);
 
-  // Persisted so a future re-embed can skip the Gemini PDF→Markdown step
+  // Persisted so a future re-embed can skip the PDF→Markdown step
   // entirely instead of re-parsing the PDF from scratch every time.
   const markdownUrl = await uploadMarkdown(input.fileName, markdown);
 
@@ -77,7 +77,7 @@ export async function ingestPdf(input: IngestInput) {
  * persisted. A failed run is terminal — the runtime cannot resume it in place
  * (re-enqueueing a failed run is a no-op), so this is a fresh run that simply
  * starts past the work that already succeeded: the PDF is not re-uploaded and,
- * crucially, the Gemini PDF→Markdown parse never runs again.
+ * crucially, the PDF→Markdown parse never runs again.
  *
  * The tail is deliberately identical to `ingestPdf`'s and to
  * `reembedDocument`'s — the same steps in the same order, so chunk boundaries

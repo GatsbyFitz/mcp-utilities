@@ -25,7 +25,7 @@ export async function reembedDocument(input: ReembedInput) {
     pathname: input.blobPath,
   };
 
-  // Prefer the persisted markdown so re-embedding never re-runs the Gemini
+  // Prefer the persisted markdown so re-embedding never re-runs the
   // PDF→Markdown step. Legacy rows uploaded before markdown_url existed fall
   // back to regenerating it once, then self-heal by persisting it for next time.
   const markdown = input.markdownUrl

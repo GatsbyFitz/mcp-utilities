@@ -36,7 +36,7 @@ export async function reextractFigures(input: ReextractFiguresInput) {
   };
 
   // Prefer the persisted Markdown: it carries the `[Figure: ...]` and page
-  // markers this needs, and reusing it skips the Gemini PDF→Markdown parse.
+  // markers this needs, and reusing it skips the PDF→Markdown parse.
   // A legacy row without one regenerates it and then self-heals.
   const markdown = input.markdownUrl
     ? await fetchMarkdown(input.markdownUrl)

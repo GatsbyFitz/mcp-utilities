@@ -14,7 +14,7 @@ Browser ──upload()──> Vercel Blob             MCP client (e.g. Claude Co
 POST /api/upload  (JSON manifest)                  │  (mcp-handler)
     │  (durable workflow, one per file)     ┌───────┴────────┐
     ▼                                       ▼                ▼
-1. createMarkdown    (Gemini PDF→MD)   search_docs       search_graph
+1. createMarkdown    (Claude PDF→MD)   search_docs       search_graph
 2. createEmbeddings → Upstash Vector   (vector + sparse   (graph walk +
 3. extractGraph     → Neo4j Aura        hybrid + rerank)   vector-seeded)
 4. recordUpload     → Neon Postgres         │                │
@@ -41,7 +41,7 @@ See [.claude/conventions/](.claude/conventions/) for the full architecture write
 
 `POST /api/upload` starts one workflow per file, with these steps in order:
 
-1. **createMarkdown** — converts the PDF to Markdown via Gemini
+1. **createMarkdown** — converts the PDF to Markdown (`anthropic/claude-sonnet-5-5`; every model id lives in [lib/models.ts](lib/models.ts))
 2. **createEmbeddings** — chunks the markdown (`lib/chunking.ts`) and embeds each chunk into Upstash Vector (`google/gemini-embedding-2`, 1536 dimensions)
 3. **extractGraph** — re-derives the same chunks and extracts entities/relationships into Neo4j
 4. **recordUpload** — writes a row to the Neon `uploads` table
@@ -82,7 +82,7 @@ Each step carries the runtime's own failure message (`error.message` / `error.co
 
 A failed run is terminal — the runtime will not resume it in place, and re-enqueueing one is a no-op. Instead, `ingestPdf` records a **resume point** (`markResumePoint`) into the workflow journal as soon as the Markdown is persisted: the file name, size, blob URLs and Markdown URL, all in one small step output.
 
-`POST /api/retryUpload { runId }` reads that one step (resolving only it — every other step's serialized input carries the whole PDF or the whole Markdown) and starts a `resumeIngest` run from it. That workflow fetches the saved Markdown and runs contextualise → embed → extract graph → record, so **neither the upload nor the Gemini PDF→Markdown parse runs again**. The response returns the new run ID, which the client tracks in place of the old one.
+`POST /api/retryUpload { runId }` reads that one step (resolving only it — every other step's serialized input carries the whole PDF or the whole Markdown) and starts a `resumeIngest` run from it. That workflow fetches the saved Markdown and runs contextualise → embed → extract graph → record, so **neither the upload nor the PDF→Markdown parse runs again**. The response returns the new run ID, which the client tracks in place of the old one.
 
 `uploadStatus` reports `resumable: true` only for a failed run that reached the resume point. A run that failed earlier — during upload or the parse itself — has no saved Markdown to reuse, so retry is refused with a 409 and the file must be uploaded again.
 

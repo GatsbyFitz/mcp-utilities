@@ -23,7 +23,7 @@ export const INGEST_STEPS = [
 ] as const;
 
 // A retry of a failed ingestion starts from the markdown that run already
-// persisted, so it never re-uploads the PDF or re-runs the Gemini parse. Must
+// persisted, so it never re-uploads the PDF or re-runs the PDF→Markdown parse. Must
 // match the awaits in `resumeIngest`.
 export const RESUME_STEPS = [
   { name: "fetchMarkdown", label: "Loading saved Markdown" },
@@ -41,7 +41,7 @@ export const RESUME_STEPS = [
 // persisted Markdown and touches neither chunks nor the graph.
 //
 // The first step is whichever branch the run took. A row with a markdown_url
-// fetches it; a legacy row without one regenerates it, and that is a Gemini
+// fetches it; a legacy row without one regenerates it, and that is a full
 // parse rather than a blob GET, so it is much the slowest part of the run and
 // showing it as pending would misreport exactly the case that takes longest.
 // `aka` lets one reported step stand for either.

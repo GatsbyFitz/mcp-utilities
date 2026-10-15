@@ -1,4 +1,5 @@
 import { generateText, embedMany, Output } from "ai";
+import { EXTRACTION_MODEL } from "@/lib/models";
 import * as z from "zod/v4";
 import { mapPool } from "@/lib/pool";
 import { vectorIndex, escapeFilterValue } from "@/lib/vector";
@@ -366,7 +367,7 @@ async function askForMermaid(
   prompt: string
 ): Promise<{ isProcess: boolean; title: string; actors: string[]; mermaid: string }> {
   const { output } = await generateText({
-    model: "google/gemini-3.5-flash-lite",
+    model: EXTRACTION_MODEL,
     output: Output.object({ schema: ProcessSchema }),
     messages: [
       {

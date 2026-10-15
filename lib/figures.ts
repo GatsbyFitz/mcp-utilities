@@ -338,7 +338,7 @@ export interface ExtractedFigure {
 /**
  * Pages worth rendering, taken from markers `createMarkdown` already emits.
  *
- * `PARSE_PROMPT` asks Gemini to describe figures as `[Figure: ...]` and to
+ * `PARSE_PROMPT` asks the parse model to describe figures as `[Figure: ...]` and to
  * emit a page-break line before each page, so the pages containing figures are
  * derivable from output we already have — no extra model call, and no
  * rendering of the many pages that are pure prose.
