@@ -5,6 +5,7 @@ import { registerRequestDocumentTool } from "./request-document";
 import { registerSearchComplianceTool } from "./search-compliance";
 import { registerSearchAerPerformanceTool } from "./search-aer-performance";
 import { registerFindReferenceTool } from "./find-reference";
+import { registerAddReferenceTool } from "./add-reference";
 
 export function registerAllTools(server: any): void {
   registerEchoTool(server);
@@ -14,4 +15,5 @@ export function registerAllTools(server: any): void {
   registerSearchComplianceTool(server);
   registerSearchAerPerformanceTool(server);
   registerFindReferenceTool(server);
+  registerAddReferenceTool(server);
 }
