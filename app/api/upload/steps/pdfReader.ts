@@ -2,6 +2,7 @@ import { FatalError } from "workflow";
 import { generateText } from "ai";
 import {
   MARKDOWN_MAX_OUTPUT_TOKENS,
+  asMb,
   isAnthropicModel,
   markdownModelFor,
 } from "@/lib/models";
@@ -34,12 +35,16 @@ export async function createMarkdown(blobUrl: string): Promise<string> {
   if (!res.ok) throw new FatalError(`Blob fetch failed: ${res.status}`);
   const buffer = Buffer.from(await res.arrayBuffer());
 
-  // Which model can take this payload at all — see MAX_CLAUDE_PDF_BYTES.
-  const { model, reason } = markdownModelFor(buffer.byteLength);
-  if (reason === "oversize") {
-    console.warn(
-      `[createMarkdown] ${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB exceeds ` +
-        `the Anthropic request cap; parsing with ${model} instead.`
+  // Both providers take the PDF inline, so the request-size limit decides
+  // whether this can run at all — and there is nothing to fall back to, since
+  // Gemini's inline ceiling is lower than Anthropic's. Refuse with the number,
+  // rather than paying for a request the provider will reject.
+  const { model, maxBytes, overLimit } = markdownModelFor(buffer.byteLength);
+  if (overLimit) {
+    throw new FatalError(
+      `This PDF is ${asMb(buffer.byteLength)}; ${model} takes at most ` +
+        `${asMb(maxBytes!)} inline. MAX_UPLOAD_BYTES is far higher, so the upload ` +
+        `succeeded and only the parse cannot run. Split the PDF and ingest the parts.`
     );
   }
 

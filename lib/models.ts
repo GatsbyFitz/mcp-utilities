@@ -47,21 +47,51 @@ export const MARKDOWN_MODEL = process.env.MARKDOWN_MODEL || "anthropic/claude-so
  */
 export const EXTRACTION_MODEL = "google/gemini-3.5-flash-lite";
 
-/** Used when a PDF is too large to send to an `anthropic/…` model. */
-export const MARKDOWN_FALLBACK_MODEL = EXTRACTION_MODEL;
+/**
+ * Both providers take the PDF **inline**, base64'd into the request body, so
+ * the binding limit is request size — and they do not agree on it:
+ *
+ *  - Anthropic: 32 MB per request.
+ *  - Gemini: 20 MB total for inline data. Google's own guidance above that is
+ *    the Files API, which this pipeline does not use.
+ *
+ * Claude is therefore the *more* permissive path, which is the opposite of how
+ * it looks: moving this step to Claude raised the largest PDF this app can
+ * parse from ~15 MB to ~23 MB.
+ *
+ * It also means there is no useful fallback. A PDF too large for Anthropic is
+ * too large for Gemini by a wider margin, so sending it there would pay for a
+ * second request and fail anyway — with a provider error about inline data
+ * rather than a sentence naming the limit. Over the ceiling the parse refuses.
+ *
+ * The limit nobody had encoded is the pre-existing one: `MAX_UPLOAD_BYTES` is
+ * 500 MB, so this app has always accepted PDFs it could never parse, and found
+ * out one provider error at a time.
+ */
+const REQUEST_LIMIT_BYTES: ReadonlyArray<readonly [string, number]> = [
+  ["anthropic/", 32 * 1024 * 1024],
+  ["google/", 20 * 1024 * 1024],
+];
+
+/** base64 carries 3 bytes in every 4. */
+const BASE64_OVERHEAD = 4 / 3;
+
+/** Room for the prompt and the JSON framing around the encoded PDF. */
+const ENVELOPE_ALLOWANCE = 1024 * 1024;
 
 /**
- * Anthropic caps the **whole request** at 32 MB, and a PDF is base64-encoded
- * into it, inflating it by 4/3. 23 MB of PDF is ~31 MB encoded, which leaves
- * room for the prompt.
+ * The largest raw PDF a model will take, derived from its request limit rather
+ * than written down — a hand-copied byte count is the one that goes stale.
  *
- * This matters because `MAX_UPLOAD_BYTES` is 500 MB: a document this app
- * accepts today can be 20× what Anthropic will take. Gemini bills PDFs by
- * page rather than by payload and has no comparable ceiling, so an oversize
- * document falls back to it rather than failing — a PDF that ingested
- * yesterday must not stop ingesting because the model changed.
+ * `null` for a model with no limit recorded here, which is not read as
+ * "unlimited" but as "do not guess": the parse proceeds and the provider
+ * decides.
  */
-export const MAX_CLAUDE_PDF_BYTES = 23 * 1024 * 1024;
+export function maxInlinePdfBytes(model: string): number | null {
+  const match = REQUEST_LIMIT_BYTES.find(([prefix]) => model.startsWith(prefix));
+  if (!match) return null;
+  return Math.floor((match[1] - ENVELOPE_ALLOWANCE) / BASE64_OVERHEAD);
+}
 
 /**
  * The Anthropic API requires `max_tokens`; it has no "as much as it takes".
@@ -80,20 +110,25 @@ export function isAnthropicModel(model: string): boolean {
 
 export interface MarkdownModelChoice {
   model: string;
-  /** `oversize` means the preferred model could not take the payload. */
-  reason: "preferred" | "oversize";
+  /** This model's raw-PDF ceiling, or null if none is recorded for it. */
+  maxBytes: number | null;
+  /** True when the PDF exceeds it — no provider here takes it inline. */
+  overLimit: boolean;
 }
 
 /**
- * Which model parses a PDF of this size.
+ * Which model parses a PDF of this size, and whether it can at all.
  *
- * The cap is Anthropic's, so it is applied only when the preferred model is
- * Anthropic's. Pointing `MARKDOWN_MODEL` back at Gemini must not inherit a
- * limit that provider does not have.
+ * Each provider's ceiling is applied to its own ids, so pointing
+ * `MARKDOWN_MODEL` at a different provider gets that provider's limit rather
+ * than inheriting one it does not have.
  */
 export function markdownModelFor(bytes: number, preferred = MARKDOWN_MODEL): MarkdownModelChoice {
-  if (isAnthropicModel(preferred) && bytes > MAX_CLAUDE_PDF_BYTES) {
-    return { model: MARKDOWN_FALLBACK_MODEL, reason: "oversize" };
-  }
-  return { model: preferred, reason: "preferred" };
+  const maxBytes = maxInlinePdfBytes(preferred);
+  return { model: preferred, maxBytes, overLimit: maxBytes !== null && bytes > maxBytes };
+}
+
+/** Megabytes, for an error a person has to act on. */
+export function asMb(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
