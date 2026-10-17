@@ -1,8 +1,10 @@
 import { lookup } from "node:dns/promises";
 import { put } from "@vercel/blob";
 import {
+  ALLOWED_SPREADSHEET_CONTENT_TYPES,
   ALLOWED_UPLOAD_CONTENT_TYPES,
   MAX_UPLOAD_BYTES,
+  schedulePathname,
   uploadPathname,
   type UploadedFile,
 } from "./upload";
@@ -21,6 +23,51 @@ import {
 
 /** A refusal the operator should see, as opposed to an internal failure. */
 export class DocumentFetchError extends Error {}
+
+/**
+ * What a fetched file is allowed to be, and where it lands.
+ *
+ * The three travel together on purpose. The PDF allowlist gates the document
+ * pipeline; admitting a spreadsheet to it would not be refused here but would
+ * fail deep inside `createMarkdown`, and a PDF dropped into `schedules/` would
+ * reach a parser that cannot open it. Each caller names the kind it means.
+ */
+export interface DocumentKind {
+  /** Completes "Expected a PDF but the source returned …". */
+  label: string;
+  /** Content types the source may declare. */
+  contentTypes: readonly string[];
+  /** Lower-case, dotted. The first is the default when a name has none. */
+  extensions: readonly string[];
+  /** Where in Blob it is stored. */
+  pathname: (fileName: string) => string;
+  /**
+   * What Blob records it as. Derived from the name rather than echoed from the
+   * source, which is the header that was just checked and is advisory anyway.
+   */
+  contentTypeFor: (fileName: string) => string;
+}
+
+export const PDF_KIND: DocumentKind = {
+  label: "a PDF",
+  contentTypes: ALLOWED_UPLOAD_CONTENT_TYPES,
+  extensions: [".pdf"],
+  pathname: uploadPathname,
+  contentTypeFor: () => "application/pdf",
+};
+
+export const SPREADSHEET_KIND: DocumentKind = {
+  label: "a spreadsheet",
+  contentTypes: ALLOWED_SPREADSHEET_CONTENT_TYPES,
+  // `.xlsm` because the AER ships it: Q3 2024-25 was published macro-enabled
+  // while the quarters either side of it were not.
+  extensions: [".xlsx", ".xlsm"],
+  pathname: schedulePathname,
+  contentTypeFor: (fileName) =>
+    fileName.toLowerCase().endsWith(".xlsm")
+      ? ALLOWED_SPREADSHEET_CONTENT_TYPES[1]
+      : ALLOWED_SPREADSHEET_CONTENT_TYPES[0],
+};
 
 const MAX_REDIRECTS = 5;
 
@@ -147,37 +194,51 @@ function cappedStream(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Arr
 }
 
 /** Last path segment of the URL, as a starting point for the stored name. */
-export function fileNameFromUrl(rawUrl: string, fallback: string): string {
+export function fileNameFromUrl(
+  rawUrl: string,
+  fallback: string,
+  kind: DocumentKind = PDF_KIND
+): string {
+  const hasExtension = (name: string) =>
+    kind.extensions.some((ext) => name.toLowerCase().endsWith(ext));
+
   try {
     const name = decodeURIComponent(new URL(rawUrl).pathname.split("/").filter(Boolean).pop() ?? "");
-    if (name.toLowerCase().endsWith(".pdf")) return name;
+    if (hasExtension(name)) return name;
   } catch {
     /* fall through to the caller's title */
   }
   const base = fallback.trim().replace(/[\\/]+/g, "-") || "document";
-  return base.toLowerCase().endsWith(".pdf") ? base : `${base}.pdf`;
+  return hasExtension(base) ? base : `${base}${kind.extensions[0]}`;
 }
 
 /**
- * Streams a PDF from `url` into Blob storage and returns it in the same shape
- * a browser upload produces, so the caller can start `ingestPdf` with it
+ * Streams a file from `url` into Blob storage and returns it in the same shape
+ * a browser upload produces, so the caller can start a workflow with it
  * exactly as `POST /api/upload` does.
+ *
+ * One fetcher for every kind, deliberately. Everything above this line — the
+ * resolved-address checks, the hand-followed redirects, the cap that aborts
+ * mid-transfer — is what a second fetcher would quietly do without.
  */
-export async function downloadPdfToBlob(
+export async function downloadToBlob(
   url: string,
-  fileName: string
+  fileName: string,
+  kind: DocumentKind
 ): Promise<UploadedFile> {
   const res = await fetchFollowingRedirects(url);
 
   const contentType = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-  const looksLikePdf =
-    ALLOWED_UPLOAD_CONTENT_TYPES.includes(contentType) ||
-    // Plenty of document servers send octet-stream for a PDF. Accept it only
-    // when the name agrees; anything else is refused rather than guessed at.
-    (contentType === "application/octet-stream" && fileName.toLowerCase().endsWith(".pdf"));
-  if (!looksLikePdf) {
+  const expected =
+    kind.contentTypes.includes(contentType) ||
+    // Plenty of document servers send octet-stream for a real document.
+    // Accept it only when the name agrees; anything else is refused rather
+    // than guessed at.
+    (contentType === "application/octet-stream" &&
+      kind.extensions.some((ext) => fileName.toLowerCase().endsWith(ext)));
+  if (!expected) {
     throw new DocumentFetchError(
-      `Expected a PDF but the source returned "${contentType || "no content type"}"`
+      `Expected ${kind.label} but the source returned "${contentType || "no content type"}"`
     );
   }
 
@@ -190,10 +251,10 @@ export async function downloadPdfToBlob(
   }
   if (!res.body) throw new DocumentFetchError("Source returned an empty response");
 
-  const blob = await put(uploadPathname(fileName), cappedStream(res.body), {
+  const blob = await put(kind.pathname(fileName), cappedStream(res.body), {
     access: "public",
     addRandomSuffix: false,
-    contentType: "application/pdf",
+    contentType: kind.contentTypeFor(fileName),
   });
 
   return {
@@ -205,4 +266,9 @@ export async function downloadPdfToBlob(
     downloadUrl: blob.downloadUrl,
     pathname: blob.pathname,
   };
+}
+
+/** The PDF path, unchanged for its callers. */
+export function downloadPdfToBlob(url: string, fileName: string): Promise<UploadedFile> {
+  return downloadToBlob(url, fileName, PDF_KIND);
 }

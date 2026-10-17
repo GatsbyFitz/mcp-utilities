@@ -29,6 +29,30 @@ upload surface rather than accepting a form body:
 Shared constants, the name-normalisation rule, and the manifest type live in
 [lib/upload.ts](../../lib/upload.ts) so client and server cannot disagree.
 
+## A second surface: the AER schedule workbooks
+
+`POST /api/ingestSchedule` and `/api/ingestSchedule/token` are that pattern
+copied, not the PDF routes widened. The two authorise different things, and the
+difference is the point: the PDF token route refuses a duplicate document name,
+which is right for the knowledge base — chunk ids are built from it — and wrong
+for a quarter that may legitimately be re-uploaded to correct it. So
+`ALLOWED_UPLOAD_CONTENT_TYPES` and `ALLOWED_SPREADSHEET_CONTENT_TYPES` are
+separate lists and each caller names the one it means. Widening the PDF list
+instead would let a workbook through the token route and then fail it deep
+inside `createMarkdown`, with an error about Markdown rather than about the
+file being a spreadsheet.
+
+## Fetching by URL is the same fetcher
+
+A document the server fetches itself — an approved `request_document`, or an
+AER workbook linked from a release page — goes through `downloadToBlob` in
+[lib/fetchDocument.ts](../../lib/fetchDocument.ts), parameterised by a
+`DocumentKind` rather than copied. That file resolves the hostname and checks
+the *resolved* addresses on every redirect hop, because a server-side fetch of
+a supplied URL leaves from inside the deployment, where it can reach metadata
+endpoints and anything else not exposed to the internet. A second fetcher would
+lose all of that while looking like it worked. Add a kind; never a fetcher.
+
 ## Do not use `onUploadCompleted`
 
 It is a Blob-to-server callback that cannot reach `localhost`, so depending on

@@ -34,7 +34,7 @@ export interface ReextractGraphInput {
 export async function reextractGraph(input: ReextractGraphInput) {
   "use workflow";
 
-  // Prefer the persisted markdown so this never re-runs the Gemini PDF→Markdown
+  // Prefer the persisted markdown so this never re-runs the PDF→Markdown
   // step. A legacy row without one regenerates it once and then self-heals.
   const markdown = input.markdownUrl
     ? await fetchMarkdown(input.markdownUrl)

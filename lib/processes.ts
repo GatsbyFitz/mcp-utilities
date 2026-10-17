@@ -82,3 +82,29 @@ export interface DocumentProcess {
   sourceUrl: string | null;
   document: string;
 }
+
+/**
+ * What a process scan did, not just what it produced.
+ *
+ * `processCount: 0` has three causes that look identical: there were no
+ * figures to read, the figures were read and none depicted a process, or every
+ * crop failed to fetch. The first is fixed by extracting figures, the second
+ * is the honest answer for a document of bar charts, and the third is a bug.
+ * Reporting only the count made them indistinguishable.
+ */
+export interface ProcessReport {
+  /** Figures available to read — zero means extract figures first. */
+  figuresAvailable: number;
+  /** Figures actually shown to the model, after MAX_PROCESSES_PER_DOCUMENT. */
+  examined: number;
+  /** Looked at, and genuinely not a process: a chart, a photo, a schematic. */
+  notProcess: number;
+  /** Crops that could not be fetched or were too large to send. */
+  unreadable: number;
+  /** Transcribed. */
+  processCount: number;
+  /** Of those, how many needed the repair round. */
+  repaired: number;
+  /** Of those, how many are still invalid Mermaid and render as the image. */
+  invalid: number;
+}

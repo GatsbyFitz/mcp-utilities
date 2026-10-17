@@ -12,7 +12,10 @@
     "verify:sync-errors": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-sync-errors.mjs",
     "verify:processes": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-processes.mjs",
     "verify:kb-documents": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-kb-documents.mjs",
-    "verify:references": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-references.mjs"
+    "verify:aer": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-aer.mjs",
+    "verify:extraction-report": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-extraction-report.mjs",
+    "verify:references": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-references.mjs",
+    "verify:markdown-model": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-markdown-model.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.10",
@@ -27,6 +30,7 @@
     "ai": "^7.0.18",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "exceljs": "^4.4.0",
     "lucide-react": "^1.23.0",
     "mcp-handler": "^2.1.0",
     "mermaid": "^12.0.0",

@@ -1,4 +1,5 @@
 import { generateText } from "ai";
+import { EXTRACTION_MODEL } from "@/lib/models";
 import { chunkText, extractTitle } from "@/lib/chunking";
 import { mapPool } from "@/lib/pool";
 
@@ -96,7 +97,7 @@ export async function contextualizeChunks(fileName: string, markdown: string): P
   const contextFor = async (chunk: string, i: number): Promise<string> => {
     try {
       const result = await generateText({
-        model: "google/gemini-3.5-flash-lite",
+        model: EXTRACTION_MODEL,
         prompt: CONTEXT_PROMPT(document, chunk),
       });
 

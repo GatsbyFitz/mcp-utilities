@@ -18,6 +18,10 @@
 // Run: pnpm verify:references
 import {
   MAX_REFERENCE_NAME,
+  MAX_REFERENCE_RESULTS,
+  MIN_REFERENCE_RELEVANCE,
+  REFERENCE_CANDIDATES,
+  relevantReferences,
   REFERENCE_KIND,
   descriptorText,
   nameFromUrl,
@@ -129,6 +133,52 @@ console.log("What gets embedded:");
   check("missing key terms do not leave a dangling separator",
     !/\|\s*$/.test(descriptorText({ title: "T", summary: "S", keyTerms: [] })),
     descriptorText({ title: "T", summary: "S", keyTerms: [] }));
+}
+
+console.log("Offering a page only when it answers the question:")
+{
+  // Measured against the deployed index while it held one row: the hybrid
+  // score is reciprocal-rank fusion, so it is 1/60 + 1/60 for rank 1 on both
+  // retrievers and 1/60 for one. A question the page answered and a question
+  // about an entirely different system both came back at 0.0333.
+  //
+  // This check exists so nobody reintroduces a threshold on that number. It is
+  // a rank, not a relevance, and there is nothing in it to threshold.
+  const HYBRID_GOOD = 1 / 60 + 1 / 60;
+  const HYBRID_WRONG = 1 / 60 + 1 / 60;
+  check("the fused retrieval score cannot separate a good match from a bad one",
+    HYBRID_GOOD === HYBRID_WRONG, `${HYBRID_GOOD} vs ${HYBRID_WRONG}`);
+
+  // The reranker's score can, which is the whole reason it is called here.
+  const ranked = [
+    { name: "claude-api-pdf-support", score: 0.84 },
+    { name: "some-unrelated-page", score: 0.002 },
+  ];
+  const kept = relevantReferences(ranked);
+  check("a relevant match survives the floor",
+    kept.some((r) => r.name === "claude-api-pdf-support"));
+  check("an irrelevant one does not",
+    !kept.some((r) => r.name === "some-unrelated-page"), JSON.stringify(kept));
+
+  check("the floor is above a rerank score for an unrelated page",
+    MIN_REFERENCE_RELEVANCE > 0.002);
+  // Too high is the worse failure: it hides pages that do cover the question,
+  // which is precisely what this tool exists to find.
+  check("but low enough to keep a weak-yet-plausible match",
+    MIN_REFERENCE_RELEVANCE < 0.2, String(MIN_REFERENCE_RELEVANCE));
+
+  // Every match below the floor must leave nothing, so the tool reports "none
+  // of these covers it" rather than handing over the nearest row.
+  check("all-weak reranks yield nothing to offer",
+    relevantReferences([{ score: 0.001 }, { score: 0.004 }]).length === 0);
+  check("an empty ranking is empty, not an error",
+    relevantReferences([]).length === 0);
+
+  // Reranking can only reorder what retrieval returned, so the candidate pool
+  // has to be wider than the shortlist or the rerank is a formality.
+  check("the candidate pool is wider than the shortlist",
+    REFERENCE_CANDIDATES > MAX_REFERENCE_RESULTS,
+    `${REFERENCE_CANDIDATES} candidates vs ${MAX_REFERENCE_RESULTS} returned`);
 }
 
 console.log(failures === 0 ? "\nAll reference checks passed." : `\n${failures} check(s) failed.`);

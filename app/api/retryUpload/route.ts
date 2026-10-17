@@ -25,7 +25,7 @@ const RESUME_POINT_STEP = "markResumePoint";
  * than from the original PDF. A failed run is terminal — the runtime will not
  * resume it in place — so this starts a fresh `resumeIngest` run seeded from
  * the resume point the failed run left behind, skipping the upload and the
- * Gemini parse.
+ * PDF→Markdown parse.
  *
  * That resume point is looked for in `ingestion_runs` first and in the run's
  * own journal second. The row is the more reliable of the two: journal output

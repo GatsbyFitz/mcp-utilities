@@ -33,13 +33,13 @@ export async function reextractProcesses(input: ReextractProcessesInput) {
   const sources = await readFigureSources(input.fileName);
 
   // Null markdown: the title falls back to the file name rather than paying a
-  // blob fetch, or worse a Gemini parse, for one string.
-  const { processCount, repaired, invalid } = await extractProcesses(
-    input.fileName,
-    blob,
-    null,
-    sources
-  );
+  // blob fetch, or worse a PDF→Markdown parse, for one string.
+  const processReport = await extractProcesses(input.fileName, blob, null, sources);
 
-  return { fileName: input.fileName, figures: sources.length, processes: processCount, repaired, invalid };
+  return {
+    fileName: input.fileName,
+    figures: sources.length,
+    processes: processReport.processCount,
+    processReport,
+  };
 }

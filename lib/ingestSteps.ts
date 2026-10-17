@@ -1,3 +1,6 @@
+import type { FigureReport } from "@/lib/figures";
+import type { ProcessReport } from "@/lib/processes";
+
 // Shared vocabulary for reporting ingestion progress, used by
 // `GET /api/uploadStatus` and by the upload page that polls it.
 //
@@ -20,7 +23,7 @@ export const INGEST_STEPS = [
 ] as const;
 
 // A retry of a failed ingestion starts from the markdown that run already
-// persisted, so it never re-uploads the PDF or re-runs the Gemini parse. Must
+// persisted, so it never re-uploads the PDF or re-runs the PDF→Markdown parse. Must
 // match the awaits in `resumeIngest`.
 export const RESUME_STEPS = [
   { name: "fetchMarkdown", label: "Loading saved Markdown" },
@@ -38,7 +41,7 @@ export const RESUME_STEPS = [
 // persisted Markdown and touches neither chunks nor the graph.
 //
 // The first step is whichever branch the run took. A row with a markdown_url
-// fetches it; a legacy row without one regenerates it, and that is a Gemini
+// fetches it; a legacy row without one regenerates it, and that is a full
 // parse rather than a blob GET, so it is much the slowest part of the run and
 // showing it as pending would misreport exactly the case that takes longest.
 // `aka` lets one reported step stand for either.
@@ -55,6 +58,16 @@ export const FIGURE_STEPS = [
 export const PROCESS_STEPS = [
   { name: "readFigureSources", label: "Loading figures" },
   { name: "extractProcesses", label: "Reading processes" },
+] as const;
+
+// One AER schedule workbook — the `ingestSchedule` workflow behind
+// POST /api/ingestSchedule. Three steps because they fail differently: reading
+// the sheets is deterministic, inferring what the columns mean is the only
+// model call, and writing the rows is the only database work.
+export const SCHEDULE_STEPS = [
+  { name: "readSheetPreviews", label: "Reading sheets" },
+  { name: "inferMappings", label: "Reading the column layout" },
+  { name: "extractAndStore", label: "Storing observations" },
 ] as const;
 
 /** One reported step, optionally standing in for alternative journal names. */
@@ -78,6 +91,8 @@ export function stepsForWorkflow(workflowName: string | null): readonly Progress
       return FIGURE_STEPS;
     case "reextractProcesses":
       return PROCESS_STEPS;
+    case "ingestSchedule":
+      return SCHEDULE_STEPS;
     default:
       return INGEST_STEPS;
   }
@@ -127,6 +142,19 @@ export interface IngestStepProgress {
   completedAt: string | null;
 }
 
+/**
+ * What a finished run produced, read from the workflow's own return value.
+ *
+ * Only ever populated for a completed run: `run.returnValue` polls until the
+ * run finishes, so asking for it mid-flight would hang the status poll. Both
+ * fields are optional because not every workflow produces both — a process
+ * re-scan has no figure report, and a graph rebuild has neither.
+ */
+export interface IngestRunOutcome {
+  figureReport?: FigureReport;
+  processReport?: ProcessReport;
+}
+
 export interface IngestRunProgress {
   runId: string;
   status: IngestRunStatus;
@@ -146,6 +174,11 @@ export interface IngestRunProgress {
    * PDF. False for a run that failed before the markdown existed.
    */
   resumable: boolean;
+  /**
+   * What the run produced, once it has completed. Null while it is running,
+   * and null for a run whose workflow returns neither report.
+   */
+  outcome: IngestRunOutcome | null;
   /** Which workflow produced these steps: "ingestPdf" or "resumeIngest". */
   workflowName: string | null;
   startedAt: string | null;
