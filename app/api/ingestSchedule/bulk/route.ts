@@ -103,7 +103,10 @@ export async function POST(req: NextRequest) {
       schedules,
       targets: targets.length,
       quarters: labels,
-      pages: targets.map((t) => t.pageUrl),
+      // Every candidate, not the likeliest one: a dry run exists to show what
+      // the real run would fetch, and it would fetch the second slug form
+      // wherever the first 404s.
+      pages: targets.flatMap((t) => t.pageUrls),
     });
   }
 

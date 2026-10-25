@@ -59,31 +59,58 @@ export async function discoverWorkbooks(
 
   const targets = discoveryTargets(labels, schedules);
   const outcomes = await mapPool(targets, DISCOVERY_CONCURRENCY, async (target) => {
-    try {
-      const res = await fetch(target.pageUrl, {
-        headers: { accept: "text/html" },
-        redirect: "follow",
-      });
-      const html = res.ok ? await res.text() : "";
-      return workbookFromPage(
-        target.schedule,
-        target.periodLabel,
-        target.pageUrl,
-        res.status,
-        html
-      );
-    } catch (error) {
-      // A network failure is not "not published" — say which it was.
-      return {
+    // The AER renamed the document-page slug mid-series, so a target carries
+    // both forms. They are tried in order and the first *answer* settles it:
+    // a 404 means "not at this URL" and the next form is tried, while anything
+    // else — a page with no link, a gated page — is this quarter's real outcome
+    // and must be reported rather than retried under another name. Retrying
+    // past a non-404 would turn one diagnosable skip into "not published".
+    let last: ReturnType<typeof workbookFromPage> | null = null;
+
+    for (const pageUrl of target.pageUrls) {
+      try {
+        const res = await fetch(pageUrl, {
+          headers: { accept: "text/html" },
+          redirect: "follow",
+        });
+        const html = res.ok ? await res.text() : "";
+        const outcome = workbookFromPage(
+          target.schedule,
+          target.periodLabel,
+          pageUrl,
+          res.status,
+          html
+        );
+        if ("workbook" in outcome) return outcome;
+        last = outcome;
+        if (res.status !== 404) return outcome;
+      } catch (error) {
+        // A network failure is not "not published" — say which it was.
+        last = {
+          skip: {
+            schedule: target.schedule,
+            periodLabel: target.periodLabel,
+            pageUrl,
+            reason: "not-published" as const,
+            detail: error instanceof Error ? error.message : "fetch failed",
+          },
+        };
+      }
+    }
+
+    // Every candidate 404'd or failed. `last` is set unless the target carried
+    // no URLs, which `discoveryTargets` does not emit.
+    return (
+      last ?? {
         skip: {
           schedule: target.schedule,
           periodLabel: target.periodLabel,
-          pageUrl: target.pageUrl,
+          pageUrl: target.pageUrls[0] ?? "",
           reason: "not-published" as const,
-          detail: error instanceof Error ? error.message : "fetch failed",
+          detail: "no candidate page URL",
         },
-      };
-    }
+      }
+    );
   });
 
   const workbooks: DiscoveredWorkbook[] = [];
