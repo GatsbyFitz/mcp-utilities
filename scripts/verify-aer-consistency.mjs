@@ -17,7 +17,9 @@
 //
 // Pure: no network, no model, no database. Run: pnpm verify:aer-consistency
 import {
+  CUSTOMER_TYPES,
   FUELS,
+  canonicalCustomerType,
   JURISDICTIONS,
   canonicalDimensions,
   canonicalFuel,
@@ -87,6 +89,28 @@ console.log("Jurisdictions and fuels onto a closed vocabulary:");
   check("dual fuel is its own value", canonicalFuel("Dual Fuel") === "dual");
   check("every fuel round-trips", FUELS.every((f) => canonicalFuel(f) === f));
   check("an unrecognised fuel is null", canonicalFuel("hydrogen blend") === null);
+}
+
+console.log("Customer segment, the dimension the schema lacked:");
+{
+  check("the three segments normalise",
+    canonicalCustomerType("Residential") === "residential" &&
+      canonicalCustomerType("Small Business") === "small_business" &&
+      canonicalCustomerType("Large") === "large");
+  check("the sheet-name abbreviations do too",
+    canonicalCustomerType("SmLBiz") === "small_business" &&
+      canonicalCustomerType("Lrg") === "large" && canonicalCustomerType("Res") === "residential",
+    [canonicalCustomerType("SmLBiz"), canonicalCustomerType("Lrg")].join("/"));
+  check("every segment round-trips", CUSTOMER_TYPES.every((c) => canonicalCustomerType(c) === c));
+  check("an unrecognised segment is null", canonicalCustomerType("Government") === null);
+  // Without this dimension the Residential, Small Business and Large sheets of
+  // one workbook share a key and silently overwrite each other.
+  check("the three are distinct keys",
+    new Set(["Residential", "Small Business", "Large"].map(canonicalCustomerType)).size === 3);
+  check("it travels with the other dimensions",
+    canonicalDimensions("AGL", null, "Electricity", "Residential").customerType === "residential");
+  check("and keeps its raw string",
+    canonicalDimensions("AGL", null, "Electricity", "Small Business").customerTypeRaw === "Small Business");
 }
 
 console.log("Refusing a total:");

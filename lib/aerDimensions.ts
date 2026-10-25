@@ -196,6 +196,40 @@ export function canonicalFuel(raw: string | null): Fuel | null {
   return FUEL_NAMES[flat] ?? null;
 }
 
+/**
+ * Customer segment. A dimension the schema did not have, and the first real
+ * workbook has three of them on separate sheets: Residential, Small Business
+ * and Large. Without it, those three sheets share
+ * `(schedule, period, retailer, metric, jurisdiction, fuel)` and silently
+ * overwrite each other — three segments collapsing to whichever wrote last.
+ */
+export const CUSTOMER_TYPES = ["residential", "small_business", "large"] as const;
+export type CustomerType = (typeof CUSTOMER_TYPES)[number];
+
+const CUSTOMER_TYPE_NAMES: Record<string, CustomerType> = {
+  residential: "residential",
+  res: "residential",
+  domestic: "residential",
+  "small business": "small_business",
+  smallbusiness: "small_business",
+  small_business: "small_business",
+  smlbiz: "small_business",
+  smallbiz: "small_business",
+  sme: "small_business",
+  business: "small_business",
+  large: "large",
+  lrg: "large",
+  "large business": "large",
+  industrial: "large",
+};
+
+export function canonicalCustomerType(raw: string | null): CustomerType | null {
+  if (!raw) return null;
+  const flat = flatten(raw).replace(/[\s]*[*†‡]+$/, "").replace(/\s+/g, " ").trim();
+  if (!flat || isAggregateLabel(flat)) return null;
+  return CUSTOMER_TYPE_NAMES[flat] ?? CUSTOMER_TYPE_NAMES[flat.replace(/\s+/g, "")] ?? null;
+}
+
 /** A retailer name seen in a workbook but not yet mapped to a known brand. */
 export interface UnmappedDimension {
   kind: "jurisdiction" | "fuel";
@@ -217,13 +251,16 @@ export interface CanonicalDimensions {
   jurisdictionRaw: string | null;
   fuel: Fuel | null;
   fuelRaw: string | null;
+  customerType: CustomerType | null;
+  customerTypeRaw: string | null;
   skip: boolean;
 }
 
 export function canonicalDimensions(
   retailerRaw: string,
   jurisdictionRaw: string | null,
-  fuelRaw: string | null
+  fuelRaw: string | null,
+  customerTypeRaw: string | null = null
 ): CanonicalDimensions {
   const retailer = canonicalRetailer(retailerRaw);
   // A total row, or a retailer cell that canonicalises to nothing, is not an
@@ -236,6 +273,8 @@ export function canonicalDimensions(
     jurisdictionRaw: jurisdictionRaw?.trim() ?? null,
     fuel: canonicalFuel(fuelRaw),
     fuelRaw: fuelRaw?.trim() ?? null,
+    customerType: canonicalCustomerType(customerTypeRaw),
+    customerTypeRaw: customerTypeRaw?.trim() ?? null,
     skip,
   };
 }

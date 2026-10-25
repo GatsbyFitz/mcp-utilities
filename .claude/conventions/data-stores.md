@@ -40,6 +40,21 @@ The AER republishes Schedules 2, 3 and 4 every quarter as Excel — what each en
 
 **Postgres, not the vector index** — the same argument the compliance tracker makes. "How many disconnections did AGL report in Victoria last quarter" needs every matching row and arithmetic over them, and top-k similarity can neither promise it has them all nor add them up. The opposite of the [processes](ingestion-pipeline.md#processes) decision, where no aggregate was ever wanted.
 
+**The columns are quarters, not metrics.** This is the shape of a real Schedule 2 sheet, and reading it wrong is the most damaging mistake available here:
+
+```
+row 3:  Q4 2022-23 to Q4 2023-24 | Electricity      | Residential
+row 4:  National                 | Customer numbers | Customer numbers | ... | Market share
+row 5:  Retailer                 | Q4 2022-23       | Q1 2023-24       | ... | Q4 2022-23
+row 6:  1st Energy               | 25576            | 25240            | ... | 0.0037
+```
+
+The measure is on row 4 and each column is a different **quarter**, named on row 5 — one workbook carries about five. Read as a single header row of metrics, five "Customer numbers" columns collapse onto one `(period, retailer, metric, …)` key and four are silently overwritten by `aer_performance_observation_idx`, leaving a real number from the wrong quarter under a correct-looking label. Nothing downstream could detect it. So `SheetMapping` has `metricRow` **and** `periodRow`, named that way because calling either one "the header" is what produced the mistake; `periodRow: 0` is the single-period shape that other sheets in the same workbook still use.
+
+Fuel, customer segment and jurisdiction are stated in cells *above* the table (`B3`, `C3`, `A4`), not in columns, so `sheetDimensions` takes cell references and a column wins over a sheet-level cell where a sheet does both. Customer segment is a dimension the table did not have: without it the Residential, Small Business and Large sheets share a key and overwrite each other.
+
+`period_label` is therefore what a number **measures** and `release_label` is which publication stated it. They differ because consecutive releases overlap by four quarters and a later one restates the earlier ones — `replaceScheduleRows` deletes every period a workbook carried rather than just the release's own, so ingest order decides the overlap and the release label makes that auditable. One consequence worth knowing: five quarters per workbook means the full history needs roughly four releases per schedule, not eighteen.
+
 **The model infers the mapping; it never emits a value.** The layout drifts between quarters, so `inferMappings` shows a model the top of each sheet and asks which column is the retailer, which is the jurisdiction, and which hold measurements — a *mapping*, in column letters. `extractAndStore` then reads the cells that mapping names. The numbers come out of the spreadsheet. A transcribed number can be wrong in a way nothing downstream detects, and a fabricated disconnection count served through a tool that reports exact totals is the worst failure available here. A wrong *mapping*, by contrast, is wrong consistently and a spot check catches it.
 
 Three steps rather than one because step boundaries are cost boundaries: inference is the only model call, so a retry of the extraction must not re-pay for it. Both the read and the extract re-open the workbook from Blob rather than passing it between steps, for the reason `extractGraph` re-derives chunks — a Schedule 3 file runs to megabytes and the journal would hold it once per step.

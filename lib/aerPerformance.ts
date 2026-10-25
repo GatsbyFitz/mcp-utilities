@@ -34,6 +34,16 @@ export interface AerObservationRow {
   jurisdictionRaw: string | null;
   fuel: string | null;
   fuelRaw: string | null;
+  /** Residential / small business / large, where the sheet distinguishes. */
+  customerType: string | null;
+  customerTypeRaw: string | null;
+  /**
+   * The release this observation was read from, e.g. "2023-24 Q4". Distinct
+   * from `periodLabel`: one workbook states five quarters, so the release says
+   * *which publication* this number came from and the period says *what it
+   * measures*. Needed because a later release restates earlier quarters.
+   */
+  releaseLabel: string;
   /** Canonical key, stable across quarters. What a query filters on. */
   metric: string;
   /** The header exactly as that workbook wrote it. */
@@ -99,6 +109,37 @@ export function periodBounds(label: string): { start: string; end: string } | nu
     start: `${year}-${pad(startMonth)}-01`,
     end: `${year}-${pad(endMonth)}-${pad(lastDay)}`,
   };
+}
+
+/**
+ * The canonical form of a period label as a workbook writes it.
+ *
+ * The sheets put the quarter first — `Q4 2023-24` — while `periodBounds` and
+ * everything stored speak `2023-24 Q4`. One function, because the columns of a
+ * real workbook *are* periods: getting this backwards would file a quarter
+ * under a label that parses but means a different three months, and no later
+ * query could detect it.
+ *
+ * Returns null rather than guessing, so a header that is not a period simply
+ * is not treated as one.
+ */
+export function normalizePeriodLabel(raw: string): string | null {
+  const flat = raw.replace(/\s+/g, " ").trim();
+  // "Q4 2023-24" / "Q4 2023–24" / "Q4 2023/24"
+  const quarterFirst = flat.match(/^Q([1-4])\s+(\d{4})\s*[-–/]\s*(\d{2,4})$/i);
+  if (quarterFirst) {
+    const second = quarterFirst[3].length === 4 ? quarterFirst[3].slice(2) : quarterFirst[3].padStart(2, "0");
+    const label = `${quarterFirst[2]}-${second} Q${quarterFirst[1]}`;
+    return periodBounds(label) ? label : null;
+  }
+  // Already canonical, or close enough for periodBounds to read.
+  const yearFirst = flat.match(/^(\d{4})\s*[-–/]\s*(\d{2,4})\s*Q([1-4])$/i);
+  if (yearFirst) {
+    const second = yearFirst[2].length === 4 ? yearFirst[2].slice(2) : yearFirst[2].padStart(2, "0");
+    const label = `${yearFirst[1]}-${second} Q${yearFirst[3]}`;
+    return periodBounds(label) ? label : null;
+  }
+  return null;
 }
 
 /** Observations stored per ingest. A guard, not a real limit. */
