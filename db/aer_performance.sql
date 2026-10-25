@@ -35,12 +35,22 @@ CREATE TABLE IF NOT EXISTS aer_performance (
   -- Bounds, so a range query does not have to parse the label.
   period_start DATE        NOT NULL,
   period_end   DATE        NOT NULL,
+  -- Canonical key, not the cell's text. "AGL Energy Ltd", "AGL Energy
+  -- Limited" and "agl energy" all land on `agl_energy`, so the observation
+  -- index below deduplicates them instead of keeping three separate series.
   retailer     TEXT        NOT NULL,
-  -- NSW/VIC/QLD/SA/TAS/ACT, or whatever the sheet actually distinguishes.
-  -- Nullable: not every sheet breaks figures down by jurisdiction.
-  jurisdiction TEXT,
-  -- electricity/gas. Nullable for the same reason.
+  -- The string the workbook actually used, kept forever so a canonicalisation
+  -- that turns out wrong can be recomputed without re-parsing anything.
+  retailer_raw TEXT,
+  -- NSW/VIC/QLD/SA/TAS/ACT/NT/WA. Nullable: not every sheet breaks figures
+  -- down by jurisdiction, and a value this app does not recognise is NULL
+  -- here rather than passed through, where it would masquerade as one a
+  -- query could filter on. The raw string keeps it visible.
+  jurisdiction     TEXT,
+  jurisdiction_raw TEXT,
+  -- electricity/gas/dual. Nullable for the same reasons.
   fuel         TEXT,
+  fuel_raw     TEXT,
   metric       TEXT        NOT NULL,
   metric_raw   TEXT        NOT NULL,
   value        NUMERIC     NOT NULL,

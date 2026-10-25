@@ -26,9 +26,14 @@ export interface AerObservationRow {
   periodLabel: string;
   periodStart: string;
   periodEnd: string;
+  /** Canonical key, stable across quarters. What a query filters on. */
   retailer: string;
+  /** Exactly as the workbook wrote it. Kept so a wrong fold is recomputable. */
+  retailerRaw: string;
   jurisdiction: string | null;
+  jurisdictionRaw: string | null;
   fuel: string | null;
+  fuelRaw: string | null;
   /** Canonical key, stable across quarters. What a query filters on. */
   metric: string;
   /** The header exactly as that workbook wrote it. */

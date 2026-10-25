@@ -16,7 +16,8 @@
     "verify:extraction-report": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-extraction-report.mjs",
     "verify:references": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-references.mjs",
     "verify:markdown-model": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-markdown-model.mjs",
-    "verify:aer-releases": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-aer-releases.mjs"
+    "verify:aer-releases": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-aer-releases.mjs",
+    "verify:aer-consistency": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-aer-consistency.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.10",

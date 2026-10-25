@@ -11,6 +11,7 @@
 // splitting a series in two.
 //
 // Run: pnpm verify:aer
+import { canonicalRetailer } from "@/lib/aerDimensions";
 import {
   extractRows,
   mappingProblems,
@@ -59,13 +60,27 @@ const MAPPING = {
 console.log("Reading values out of a sheet:");
 {
   const rows = extractRows(SHEET, MAPPING);
-  const find = (r, m) => rows.find((x) => x.retailer === r && x.metric === m);
+  // Rows are keyed by the *canonical* retailer now, so look them up by the raw
+  // string the sheet used and let canonicalRetailer do the matching — the same
+  // thing a caller does. See verify:aer-consistency for the folding itself.
+  const find = (r, m) =>
+    rows.find((x) => x.retailer === canonicalRetailer(r) && x.metric === m);
 
   check("reads a plain number", find("AGL", "residential_customers")?.value === 1000);
   check("carries the dimension", find("AGL", "residential_customers")?.jurisdiction === "VIC");
   check("records the cell it came from", find("AGL", "disconnections")?.cellRef === "D4",
     JSON.stringify(find("AGL", "disconnections")));
   check("parses a thousands separator", find("ENGIE", "residential_customers")?.value === 1234);
+  // Both halves travel: the key that is filtered on, and the string the sheet
+  // actually used, which is the only thing a wrong fold can be recomputed from.
+  check("the canonical key is stored, not the sheet's spelling",
+    find("AGL", "residential_customers")?.retailer === "agl",
+    find("AGL", "residential_customers")?.retailer);
+  check("and the sheet's spelling is kept beside it",
+    find("AGL", "residential_customers")?.retailerRaw === "AGL");
+  check("the jurisdiction is canonical too, with its raw string",
+    find("AGL", "disconnections")?.jurisdiction === "VIC" &&
+      find("AGL", "disconnections")?.jurisdictionRaw === "VIC");
 
   // The two that would quietly fabricate data.
   check("a blank cell is skipped, NOT read as 0", find("Origin", "disconnections") === undefined,
@@ -138,7 +153,9 @@ console.log("A renamed column stays one series:");
     metrics: [{ column: "C", raw: "Residential customer numbers", metric: "residential_customers" }],
   };
 
-  const before = extractRows(SHEET, MAPPING).find((r) => r.retailer === "AGL" && r.metric === "residential_customers");
+  const before = extractRows(SHEET, MAPPING).find(
+    (r) => r.retailer === canonicalRetailer("AGL") && r.metric === "residential_customers"
+  );
   const after = extractRows(laterSheet, laterMapping)[0];
 
   check("both quarters carry the same canonical metric", before.metric === after.metric,
@@ -148,6 +165,10 @@ console.log("A renamed column stays one series:");
     `${before.metricRaw} | ${after.metricRaw}`);
   // A split series sums low — that is the damage, so that is the assertion.
   check("the series sums across the rename", before.value + after.value === 2100);
+  // And the dimension has to fold too, or the rename is matched while the
+  // retailer splits underneath it and the sum is wrong anyway.
+  check("both quarters land on the same retailer key", before.retailer === after.retailer,
+    `${before.retailer} vs ${after.retailer}`);
 }
 
 console.log("Canonical keys and periods:");

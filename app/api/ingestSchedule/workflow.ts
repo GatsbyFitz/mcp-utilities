@@ -23,20 +23,20 @@ export async function ingestSchedule(input: IngestScheduleInput) {
   "use workflow";
 
   const previews = await readSheetPreviews(input.blobUrl);
-  const mappings = await inferMappings(input.schedule, previews);
+  const inference = await inferMappings(input.schedule, previews);
   const result = await extractAndStore(
     input.blobUrl,
     input.schedule,
     input.periodLabel,
     input.fileName,
-    mappings
+    inference
   );
 
   return {
     fileName: input.fileName,
     schedule: input.schedule,
     periodLabel: input.periodLabel,
-    sheets: mappings.length,
+    sheets: inference.mappings.length,
     ...result,
   };
 }

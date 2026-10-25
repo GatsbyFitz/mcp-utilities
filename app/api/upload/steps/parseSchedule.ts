@@ -8,6 +8,11 @@ import {
   type SheetMapping,
 } from "@/lib/sheetMapping";
 import {
+  MAX_DEFINITION_CHARS,
+  definitionProblem,
+  type CapturedDefinition,
+} from "@/lib/aerDefinitions";
+import {
   canonicalMetric,
   periodBounds,
   SCHEDULE_SUBJECTS,
@@ -15,7 +20,12 @@ import {
   type AerObservationRow,
   type Schedule,
 } from "@/lib/aerPerformance";
-import { knownMetrics, recordMetrics, replaceScheduleRows } from "@/lib/aerPerformanceStore";
+import {
+  knownMetrics,
+  recordDefinitions,
+  recordMetrics,
+  replaceScheduleRows,
+} from "@/lib/aerPerformanceStore";
 
 // ---------------------------------------------------------------------------
 // Steps: read an AER schedule workbook into observations
@@ -127,6 +137,12 @@ export async function readSheetPreviews(blobUrl: string): Promise<SheetPreview[]
   return previews;
 }
 
+/** What one workbook's inference yields: the mappings, and what it means. */
+export interface InferenceResult {
+  mappings: { sheetName: string; mapping: SheetMapping }[];
+  definitions: CapturedDefinition[];
+}
+
 const MappingSchema = z.object({
   isData: z.boolean(),
   headerRow: z.number().default(0),
@@ -134,7 +150,20 @@ const MappingSchema = z.object({
   jurisdictionColumn: z.string().default(""),
   fuelColumn: z.string().default(""),
   metrics: z
-    .array(z.object({ column: z.string(), header: z.string(), matchesKnownMetric: z.string().default("") }))
+    .array(
+      z.object({
+        column: z.string(),
+        header: z.string(),
+        matchesKnownMetric: z.string().default(""),
+      })
+    )
+    .default([]),
+  // Captured even when isData is false, because a definitions page is exactly
+  // the sheet this prompt rejects as data and exactly where the AER states
+  // what each metric counts. No `.min`/`.max` anywhere, per the workflow-steps
+  // rule: Gemini drops those constraints and still rejects the response.
+  definitions: z
+    .array(z.object({ term: z.string(), definition: z.string() }))
     .default([]),
   notes: z.string().default(""),
 });
@@ -149,7 +178,11 @@ function prompt(schedule: Schedule, preview: SheetPreview, known: { metric: stri
 Sheet name: ${preview.name}
 ${preview.text}
 
-Decide first whether this sheet holds reported data. A cover page, a contents list, a notes or definitions page, or a legend is NOT data: return isData false and nothing else.
+Decide first whether this sheet holds reported data. A cover page, a contents list, a notes or definitions page, or a legend is NOT data: return isData false.
+
+Whether or not it is data, report "definitions": any place this sheet states what a reported measure *means* — a definitions or notes page, a glossary, or an explanatory note under a column heading. Each entry is { term, definition } where "term" is the measure's name as written and "definition" is what the sheet says it counts.
+
+Copy the definition text EXACTLY as it appears. Do not summarise it, do not rewrite it, do not complete a sentence that is cut off, and do not supply a definition from your own knowledge of the energy market. If the sheet states no definitions, return an empty array. A definition you compose is worse than none: it would be stored as the AER's own wording for a regulatory measure.
 
 If it is data, identify:
 - "headerRow": the row number the column headers are on. Headers are words; a row of numbers is data, not a header.
@@ -177,11 +210,12 @@ Report only the columns actually on this sheet. Do not report values, and do not
 export async function inferMappings(
   schedule: Schedule,
   previews: SheetPreview[]
-): Promise<{ sheetName: string; mapping: SheetMapping }[]> {
+): Promise<InferenceResult> {
   "use step";
 
   const known = (await knownMetrics(schedule)).map((m) => ({ metric: m.metric, aliases: m.aliases }));
   const mappings: { sheetName: string; mapping: SheetMapping }[] = [];
+  const definitions: CapturedDefinition[] = [];
 
   for (const preview of previews) {
     if (!preview.text.trim()) continue;
@@ -192,6 +226,24 @@ export async function inferMappings(
         output: Output.object({ schema: MappingSchema }),
         messages: [{ role: "user", content: prompt(schedule, preview, known) }],
       });
+
+      // Definitions first, and outside the isData gate. The sheet that states
+      // them is the one this prompt classifies as *not* data, so collecting
+      // them after the gate would discard every one.
+      for (const entry of output.definitions.slice(0, 400)) {
+        const term = entry.term.trim();
+        const definition = entry.definition.trim().slice(0, MAX_DEFINITION_CHARS);
+        if (!term || definitionProblem(definition)) continue;
+        definitions.push({
+          // Matched to a canonical metric deterministically, not by the model:
+          // the term is normalised the same way a header is, so a definition
+          // lands on the metric its wording implies or on nothing at all.
+          metric: canonicalMetric(term),
+          definition,
+          sheetName: preview.name,
+          cellRef: null,
+        });
+      }
 
       if (!output.isData || output.metrics.length === 0) continue;
 
@@ -221,7 +273,10 @@ export async function inferMappings(
     }
   }
 
-  return mappings;
+  console.log(
+    `[parseSchedule] ${mappings.length} data sheets, ${definitions.length} definitions captured`
+  );
+  return { mappings, definitions };
 }
 
 /**
@@ -241,8 +296,15 @@ export async function extractAndStore(
   schedule: Schedule,
   periodLabel: string,
   sourceFile: string,
-  mappings: { sheetName: string; mapping: SheetMapping }[]
-): Promise<{ written: number; removed: number; newMetrics: string[]; skipped: string[] }> {
+  inference: InferenceResult
+): Promise<{
+  written: number;
+  removed: number;
+  newMetrics: string[];
+  skipped: string[];
+  definitionsCaptured: number;
+  definitionsChanged: string[];
+}> {
   "use step";
 
   const bounds = periodBounds(periodLabel);
@@ -252,6 +314,7 @@ export async function extractAndStore(
     );
   }
 
+  const { mappings, definitions } = inference;
   const workbook = await openWorkbook(blobUrl);
   const observations: AerObservationRow[] = [];
   const seenMetrics: { metric: string; raw: string }[] = [];
@@ -279,8 +342,11 @@ export async function extractAndStore(
         periodStart: bounds.start,
         periodEnd: bounds.end,
         retailer: row.retailer,
+        retailerRaw: row.retailerRaw,
         jurisdiction: row.jurisdiction,
+        jurisdictionRaw: row.jurisdictionRaw,
         fuel: row.fuel,
+        fuelRaw: row.fuelRaw,
         metric: row.metric,
         metricRaw: row.metricRaw,
         value: row.value,
@@ -301,12 +367,27 @@ export async function extractAndStore(
   // Recorded before the rows, so a new metric is on the record even if the
   // write below fails partway and is retried.
   const { newMetrics } = await recordMetrics(schedule, periodLabel, seenMetrics);
+
+  // Definitions before the observations, for the reason the metrics are: a
+  // definition change is the finding, and it must survive a failed row write
+  // and the retry that follows.
+  const { outcomes } = await recordDefinitions(schedule, periodLabel, sourceFile, definitions);
+  const definitionsChanged = outcomes.filter((o) => o.status === "changed").map((o) => o.metric);
+
   const { written, removed } = await replaceScheduleRows(schedule, periodLabel, observations, mappings);
 
   console.log(
     `[parseSchedule] ${sourceFile}: ${written} observation(s) across ${mappings.length - skipped.length} sheet(s)` +
-      `, ${removed} replaced, ${newMetrics.length} new metric(s), ${skipped.length} sheet(s) skipped`
+      `, ${removed} replaced, ${newMetrics.length} new metric(s), ${skipped.length} sheet(s) skipped` +
+      `, ${definitions.length} definition(s), ${definitionsChanged.length} changed`
   );
 
-  return { written, removed, newMetrics, skipped };
+  return {
+    written,
+    removed,
+    newMetrics,
+    skipped,
+    definitionsCaptured: definitions.length,
+    definitionsChanged,
+  };
 }

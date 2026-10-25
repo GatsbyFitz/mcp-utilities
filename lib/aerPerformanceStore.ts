@@ -1,3 +1,12 @@
+import {
+  MISSING_DEFINITIONS_MESSAGE,
+  classifyDefinitions,
+  definitionKey,
+  definitionProblem,
+  isMissingDefinitionsTable,
+  type CapturedDefinition,
+  type DefinitionOutcome,
+} from "@/lib/aerDefinitions";
 import { sql } from "@/lib/db";
 import {
   MAX_AER_ROWS,
@@ -45,6 +54,9 @@ interface Row {
   fuel: string | null;
   metric: string;
   metric_raw: string;
+  retailer_raw?: string | null;
+  jurisdiction_raw?: string | null;
+  fuel_raw?: string | null;
   value: string | number;
   source_file: string;
   sheet_name: string;
@@ -63,8 +75,11 @@ function toObservation(row: Row): AerObservationRow {
     periodStart: iso(row.period_start),
     periodEnd: iso(row.period_end),
     retailer: row.retailer,
+    retailerRaw: row.retailer_raw ?? row.retailer,
     jurisdiction: row.jurisdiction ?? null,
+    jurisdictionRaw: row.jurisdiction_raw ?? null,
     fuel: row.fuel ?? null,
+    fuelRaw: row.fuel_raw ?? null,
     metric: row.metric,
     metricRaw: row.metric_raw,
     value: Number(row.value),
@@ -265,19 +280,24 @@ export async function replaceScheduleRows(
   for (const row of rows) {
     await sql`
       INSERT INTO aer_performance (
-        schedule, period_label, period_start, period_end, retailer, jurisdiction,
-        fuel, metric, metric_raw, value, source_file, sheet_name, cell_ref, mapping
+        schedule, period_label, period_start, period_end, retailer, retailer_raw,
+        jurisdiction, jurisdiction_raw, fuel, fuel_raw, metric, metric_raw, value,
+        source_file, sheet_name, cell_ref, mapping
       ) VALUES (
         ${row.schedule}, ${row.periodLabel}, ${row.periodStart}::date, ${row.periodEnd}::date,
-        ${row.retailer}, ${row.jurisdiction}, ${row.fuel}, ${row.metric}, ${row.metricRaw},
+        ${row.retailer}, ${row.retailerRaw}, ${row.jurisdiction}, ${row.jurisdictionRaw},
+        ${row.fuel}, ${row.fuelRaw}, ${row.metric}, ${row.metricRaw},
         ${row.value}, ${row.sourceFile}, ${row.sheetName}, ${row.cellRef},
         ${JSON.stringify(mapping)}::jsonb
       )
       ON CONFLICT (schedule, period_label, retailer, metric,
                    COALESCE(jurisdiction, ''), COALESCE(fuel, ''))
       DO UPDATE SET
-        value       = EXCLUDED.value,
-        metric_raw  = EXCLUDED.metric_raw,
+        value            = EXCLUDED.value,
+        metric_raw       = EXCLUDED.metric_raw,
+        retailer_raw     = EXCLUDED.retailer_raw,
+        jurisdiction_raw = EXCLUDED.jurisdiction_raw,
+        fuel_raw         = EXCLUDED.fuel_raw,
         source_file = EXCLUDED.source_file,
         sheet_name  = EXCLUDED.sheet_name,
         cell_ref    = EXCLUDED.cell_ref,
@@ -287,4 +307,71 @@ export async function replaceScheduleRows(
   }
 
   return { written: rows.length, removed: removed.length };
+}
+
+/**
+ * Record the definitions one workbook stated, and report what changed.
+ *
+ * Keyed on the definition's own content, so a metric accumulates one row per
+ * distinct meaning it has ever had. A `changed` outcome is the event
+ * `aer_metrics.aliases` structurally cannot see: the name held, the series did
+ * not break, and what the number counts moved.
+ *
+ * Degrades rather than aborting when the table is absent, like every other
+ * optional table here — a run still stores its observations, it simply
+ * captures no definitions and says so.
+ */
+export async function recordDefinitions(
+  schedule: Schedule,
+  periodLabel: string,
+  sourceFile: string,
+  captured: CapturedDefinition[]
+): Promise<{ outcomes: DefinitionOutcome[]; missingTable: boolean }> {
+  if (captured.length === 0) return { outcomes: [], missingTable: false };
+
+  try {
+    const existing = (await sql`
+      SELECT metric, definition_key FROM aer_metric_definitions WHERE schedule = ${schedule}
+    `) as { metric: string; definition_key: string }[];
+
+    const outcomes = classifyDefinitions(
+      captured,
+      existing.map((r) => ({ metric: r.metric, definitionKey: r.definition_key }))
+    );
+
+    for (const entry of captured) {
+      if (definitionProblem(entry.definition)) continue;
+      const key = definitionKey(entry.definition);
+      await sql`
+        INSERT INTO aer_metric_definitions (
+          schedule, metric, definition, definition_key, first_seen, last_seen,
+          source_file, sheet_name, cell_ref
+        ) VALUES (
+          ${schedule}, ${entry.metric}, ${entry.definition}, ${key}, ${periodLabel},
+          ${periodLabel}, ${sourceFile}, ${entry.sheetName}, ${entry.cellRef}
+        )
+        ON CONFLICT (schedule, metric, definition_key)
+        -- Only the span moves. first_seen is never overwritten: it is the
+        -- answer to "which quarters used this meaning", and a re-ingest of an
+        -- old quarter must not rewrite history.
+        DO UPDATE SET
+          last_seen = GREATEST(aer_metric_definitions.last_seen, EXCLUDED.last_seen)
+      `;
+    }
+
+    const changed = outcomes.filter((o) => o.status === "changed");
+    if (changed.length > 0) {
+      console.warn(
+        `[recordDefinitions] ${changed.length} metric definition(s) CHANGED in ${periodLabel}: ` +
+          changed.map((c) => c.metric).join(", ")
+      );
+    }
+    return { outcomes, missingTable: false };
+  } catch (error) {
+    if (isMissingDefinitionsTable(error)) {
+      console.warn(`[recordDefinitions] ${MISSING_DEFINITIONS_MESSAGE}`);
+      return { outcomes: [], missingTable: true };
+    }
+    throw error;
+  }
 }

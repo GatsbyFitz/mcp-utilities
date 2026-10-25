@@ -18,6 +18,8 @@
 // half that has to be exactly right is verified with a plain object and no
 // network, credentials or model in the loop.
 
+import { canonicalDimensions } from "@/lib/aerDimensions";
+
 /** The minimum a sheet has to offer. Adapted from ExcelJS at the call site. */
 export interface SheetLike {
   name: string;
@@ -48,9 +50,14 @@ export interface SheetMapping {
 }
 
 export interface Observation {
+  /** Canonical key, stable across quarters. What a query filters on. */
   retailer: string;
+  /** Exactly as the workbook wrote it, so a wrong fold is recomputable. */
+  retailerRaw: string;
   jurisdiction: string | null;
+  jurisdictionRaw: string | null;
   fuel: string | null;
+  fuelRaw: string | null;
   metric: string;
   metricRaw: string;
   value: number;
@@ -182,24 +189,39 @@ export function extractRows(sheet: SheetLike, mapping: SheetMapping): Observatio
   const limit = Math.min(sheet.rowCount, mapping.headerRow + MAX_ROWS_PER_SHEET);
 
   for (let row = mapping.headerRow + 1; row <= limit; row++) {
-    const retailer = text(sheet.cell(row, mapping.dimensions.retailer));
-    if (!retailer) continue;
+    const retailerRaw = text(sheet.cell(row, mapping.dimensions.retailer));
+    if (!retailerRaw) continue;
 
-    const jurisdiction = mapping.dimensions.jurisdiction
+    const jurisdictionRaw = mapping.dimensions.jurisdiction
       ? text(sheet.cell(row, mapping.dimensions.jurisdiction)) || null
       : null;
-    const fuel = mapping.dimensions.fuel
+    const fuelRaw = mapping.dimensions.fuel
       ? text(sheet.cell(row, mapping.dimensions.fuel)) || null
       : null;
+
+    // Canonical for filtering, raw kept for recomputation — the same pair
+    // `metric`/`metric_raw` already uses, and for the same reason: written
+    // one way this quarter and another way next, it is one series.
+    const dims = canonicalDimensions(retailerRaw, jurisdictionRaw, fuelRaw);
+
+    // A "Total" or "All retailers" row is not an observation. Stored, it
+    // would be summed together with the parts it is the total of, and every
+    // total `search_aer_performance` reports would come back roughly double —
+    // with the exactness the tool advertises. Refused here rather than
+    // excluded at query time, which every future query would have to remember.
+    if (dims.skip) continue;
 
     for (const entry of mapping.metrics) {
       const value = numericValue(sheet.cell(row, entry.column));
       if (value === null) continue;
 
       rows.push({
-        retailer,
-        jurisdiction,
-        fuel,
+        retailer: dims.retailer,
+        retailerRaw: dims.retailerRaw,
+        jurisdiction: dims.jurisdiction,
+        jurisdictionRaw: dims.jurisdictionRaw,
+        fuel: dims.fuel,
+        fuelRaw: dims.fuelRaw,
         metric: entry.metric,
         metricRaw: entry.raw,
         value,
