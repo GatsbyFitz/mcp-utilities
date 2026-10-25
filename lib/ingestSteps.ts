@@ -70,6 +70,17 @@ export const SCHEDULE_STEPS = [
   { name: "extractAndStore", label: "Storing observations" },
 ] as const;
 
+// Backfilling every published quarter — the `backfillSchedules` workflow
+// behind POST /api/ingestSchedule/bulk. Two reported stages rather than one
+// per workbook: how many workbooks there are is only known after discovery, so
+// the second entry stands for the whole fan-out and runs for as long as the
+// staging takes. Each workbook's own `ingestSchedule` run reports separately,
+// under SCHEDULE_STEPS.
+export const BACKFILL_STEPS = [
+  { name: "discoverWorkbooks", label: "Finding published quarters" },
+  { name: "stageAndStartIngest", label: "Fetching workbooks, starting ingests" },
+] as const;
+
 /** One reported step, optionally standing in for alternative journal names. */
 export interface ProgressStep {
   name: string;
@@ -93,6 +104,8 @@ export function stepsForWorkflow(workflowName: string | null): readonly Progress
       return PROCESS_STEPS;
     case "ingestSchedule":
       return SCHEDULE_STEPS;
+    case "backfillSchedules":
+      return BACKFILL_STEPS;
     default:
       return INGEST_STEPS;
   }
