@@ -30,8 +30,13 @@ CREATE TABLE IF NOT EXISTS aer_performance (
   -- 2, 3 or 4. Kept as the AER numbers them rather than renamed to a theme,
   -- because that is how the files are published and cited.
   schedule     SMALLINT    NOT NULL,
-  -- "2023-24 Q3", as written on the release.
+  -- "2023-24 Q3" — the quarter this number MEASURES, taken from the column it
+  -- was read from. One workbook carries about five of them.
   period_label TEXT        NOT NULL,
+  -- Which published workbook stated it. Distinct from period_label because
+  -- consecutive releases overlap by four quarters and a later one restates
+  -- the earlier ones.
+  release_label TEXT,
   -- Bounds, so a range query does not have to parse the label.
   period_start DATE        NOT NULL,
   period_end   DATE        NOT NULL,
@@ -51,6 +56,11 @@ CREATE TABLE IF NOT EXISTS aer_performance (
   -- electricity/gas/dual. Nullable for the same reasons.
   fuel         TEXT,
   fuel_raw     TEXT,
+  -- residential/small_business/large. Stated in a cell above the table rather
+  -- than in a column, and varying per sheet — omitting it from the index below
+  -- made three segments collide.
+  customer_type     TEXT,
+  customer_type_raw TEXT,
   metric       TEXT        NOT NULL,
   metric_raw   TEXT        NOT NULL,
   value        NUMERIC     NOT NULL,
@@ -75,7 +85,8 @@ CREATE TABLE IF NOT EXISTS aer_performance (
 -- shape of this.
 CREATE UNIQUE INDEX IF NOT EXISTS aer_performance_observation_idx
   ON aer_performance (schedule, period_label, retailer, metric,
-                      COALESCE(jurisdiction, ''), COALESCE(fuel, ''));
+                      COALESCE(jurisdiction, ''), COALESCE(fuel, ''),
+                      COALESCE(customer_type, ''));
 
 -- The tool filters by retailer and by metric far more than anything else.
 CREATE INDEX IF NOT EXISTS aer_performance_retailer_idx

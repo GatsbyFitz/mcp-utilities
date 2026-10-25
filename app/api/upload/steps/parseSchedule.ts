@@ -7,6 +7,7 @@ import {
   type SheetLike,
   type SheetMapping,
 } from "@/lib/sheetMapping";
+import { EXTRACTION_MODEL } from "@/lib/models";
 import {
   MAX_DEFINITION_CHARS,
   definitionProblem,
@@ -145,10 +146,15 @@ export interface InferenceResult {
 
 const MappingSchema = z.object({
   isData: z.boolean(),
-  headerRow: z.number().default(0),
+  metricRow: z.number().default(0),
+  periodRow: z.number().default(0),
   retailerColumn: z.string().default(""),
   jurisdictionColumn: z.string().default(""),
   fuelColumn: z.string().default(""),
+  customerTypeColumn: z.string().default(""),
+  jurisdictionCell: z.string().default(""),
+  fuelCell: z.string().default(""),
+  customerTypeCell: z.string().default(""),
   metrics: z
     .array(
       z.object({
@@ -184,12 +190,24 @@ Whether or not it is data, report "definitions": any place this sheet states wha
 
 Copy the definition text EXACTLY as it appears. Do not summarise it, do not rewrite it, do not complete a sentence that is cut off, and do not supply a definition from your own knowledge of the energy market. If the sheet states no definitions, return an empty array. A definition you compose is worse than none: it would be stored as the AER's own wording for a regulatory measure.
 
+These workbooks commonly use TWO header rows, and getting this wrong is the most damaging mistake available here. A typical sheet:
+
+  row 3:  Q4 2022-23 to Q4 2023-24 | Electricity      | Residential
+  row 4:  National                 | Customer numbers | Customer numbers | ... | Market share
+  row 5:  Retailer                 | Q4 2022-23       | Q1 2023-24       | ... | Q4 2022-23
+  row 6:  1st Energy               | 25576            | 25240            | ... | 0.0037
+
+Here the measure is on row 4 and each column is a different QUARTER, named on row 5 — one workbook carries five quarters. Note also that the fuel, the customer segment and the jurisdiction are stated in single cells ABOVE the table, not in columns.
+
 If it is data, identify:
-- "headerRow": the row number the column headers are on. Headers are words; a row of numbers is data, not a header.
+- "metricRow": the row number holding the measure names (row 4 above). Measures are words; a row of numbers is data, not a header.
+- "periodRow": the row number holding a period per column, e.g. "Q4 2023-24" (row 5 above). Use 0 ONLY if the sheet reports a single period with no per-column quarters.
 - "retailerColumn": the column letter holding the retailer or business name.
-- "jurisdictionColumn": the column letter holding the state or jurisdiction, or "" if this sheet does not break figures down that way.
-- "fuelColumn": the column letter for electricity/gas, or "" if not applicable.
-- "metrics": every column that holds a measurement, as { column, header, matchesKnownMetric }.
+- "metrics": every column that holds a measurement, as { column, header, matchesKnownMetric }. When the columns are quarters, list EVERY one — five "Customer numbers" columns are five entries, not one.
+- "jurisdictionColumn" / "fuelColumn" / "customerTypeColumn": the column letter, when the value varies row by row; "" otherwise.
+- "jurisdictionCell" / "fuelCell" / "customerTypeCell": the cell reference (e.g. "B3") when the value is stated once for the whole sheet; "" otherwise. In the example these are "A4", "B3" and "C3".
+
+Give a column letter OR a cell reference for each dimension, never both. Customer segment means Residential / Small Business / Large.
 
 For "matchesKnownMetric": these metrics are already recorded for this schedule from earlier quarters.
 
@@ -222,7 +240,7 @@ export async function inferMappings(
 
     try {
       const { output } = await generateText({
-        model: "google/gemini-3.5-flash-lite",
+        model: EXTRACTION_MODEL,
         output: Output.object({ schema: MappingSchema }),
         messages: [{ role: "user", content: prompt(schedule, preview, known) }],
       });
@@ -250,11 +268,18 @@ export async function inferMappings(
       mappings.push({
         sheetName: preview.name,
         mapping: {
-          headerRow: output.headerRow,
+          metricRow: output.metricRow,
+          periodRow: output.periodRow,
           dimensions: {
             retailer: output.retailerColumn.trim().toUpperCase(),
             jurisdiction: output.jurisdictionColumn.trim().toUpperCase() || undefined,
             fuel: output.fuelColumn.trim().toUpperCase() || undefined,
+            customerType: output.customerTypeColumn.trim().toUpperCase() || undefined,
+          },
+          sheetDimensions: {
+            jurisdiction: output.jurisdictionCell.trim().toUpperCase() || undefined,
+            fuel: output.fuelCell.trim().toUpperCase() || undefined,
+            customerType: output.customerTypeCell.trim().toUpperCase() || undefined,
           },
           metrics: output.metrics.slice(0, 200).map((m) => ({
             column: m.column.trim().toUpperCase(),
@@ -304,11 +329,17 @@ export async function extractAndStore(
   skipped: string[];
   definitionsCaptured: number;
   definitionsChanged: string[];
+  /** Every period this workbook actually carried. Usually five, not one. */
+  periods: string[];
 }> {
   "use step";
 
-  const bounds = periodBounds(periodLabel);
-  if (!bounds) {
+  // `periodLabel` is the *release* — which publication this workbook is — and
+  // no longer the period of every row in it. One workbook states five
+  // quarters, each named on its own column, so the period travels per
+  // observation and this label says where it was published.
+  const releaseBounds = periodBounds(periodLabel);
+  if (!releaseBounds) {
     throw new FatalError(
       `Could not read a period from "${periodLabel}". Expected something like "2023-24 Q3".`
     );
@@ -336,17 +367,32 @@ export async function extractAndStore(
     }
 
     for (const row of extractRows(sheet, mapping)) {
+      // The column's own quarter where the sheet gives one, the release
+      // otherwise. Bounds are derived from whichever applies, so a date-range
+      // query cannot land on the release when the number measures something
+      // else.
+      const rowPeriod = row.periodLabel ?? periodLabel;
+      const bounds = row.periodLabel ? periodBounds(row.periodLabel) : releaseBounds;
+      if (!bounds) {
+        // extractRows already refuses a column whose period will not parse,
+        // so reaching here means the two disagree. Skip rather than guess.
+        continue;
+      }
+
       observations.push({
         schedule,
-        periodLabel,
+        periodLabel: rowPeriod,
         periodStart: bounds.start,
         periodEnd: bounds.end,
+        releaseLabel: periodLabel,
         retailer: row.retailer,
         retailerRaw: row.retailerRaw,
         jurisdiction: row.jurisdiction,
         jurisdictionRaw: row.jurisdictionRaw,
         fuel: row.fuel,
         fuelRaw: row.fuelRaw,
+        customerType: row.customerType,
+        customerTypeRaw: row.customerTypeRaw,
         metric: row.metric,
         metricRaw: row.metricRaw,
         value: row.value,
@@ -374,12 +420,22 @@ export async function extractAndStore(
   const { outcomes } = await recordDefinitions(schedule, periodLabel, sourceFile, definitions);
   const definitionsChanged = outcomes.filter((o) => o.status === "changed").map((o) => o.metric);
 
-  const { written, removed } = await replaceScheduleRows(schedule, periodLabel, observations, mappings);
+  // Every period this workbook stated, not just the release's own. Deleting
+  // one period while inserting five would leave the other four to accumulate
+  // whatever an earlier release had put there.
+  const periodsWritten = [...new Set(observations.map((o) => o.periodLabel))].sort();
+  const { written, removed } = await replaceScheduleRows(
+    schedule,
+    periodsWritten,
+    observations,
+    mappings
+  );
 
   console.log(
     `[parseSchedule] ${sourceFile}: ${written} observation(s) across ${mappings.length - skipped.length} sheet(s)` +
       `, ${removed} replaced, ${newMetrics.length} new metric(s), ${skipped.length} sheet(s) skipped` +
-      `, ${definitions.length} definition(s), ${definitionsChanged.length} changed`
+      `, ${definitions.length} definition(s), ${definitionsChanged.length} changed` +
+      `, periods ${periodsWritten.join("/") || "none"}`
   );
 
   return {
@@ -387,6 +443,7 @@ export async function extractAndStore(
     removed,
     newMetrics,
     skipped,
+    periods: periodsWritten,
     definitionsCaptured: definitions.length,
     definitionsChanged,
   };

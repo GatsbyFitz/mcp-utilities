@@ -19,6 +19,7 @@
 // network, credentials or model in the loop.
 
 import { canonicalDimensions } from "@/lib/aerDimensions";
+import { normalizePeriodLabel } from "@/lib/aerPerformance";
 
 /** The minimum a sheet has to offer. Adapted from ExcelJS at the call site. */
 export interface SheetLike {
@@ -29,13 +30,52 @@ export interface SheetLike {
 }
 
 export interface SheetMapping {
-  /** 1-based row the headers sit on. */
-  headerRow: number;
-  /** Column letters for the dimensions this sheet distinguishes. */
+  /**
+   * 1-based row holding the metric names.
+   *
+   * Named `metricRow` rather than `headerRow` because a real AER sheet has
+   * two header rows and calling either one "the header" is what produced the
+   * original mistake.
+   */
+  metricRow: number;
+  /**
+   * 1-based row holding a period label per data column, or 0 when the sheet
+   * reports one period.
+   *
+   * This is the discovery that forced the redesign. A Schedule 2 sheet looks
+   * like this:
+   *
+   *   row 4:  National | Customer numbers | Customer numbers | ... | Market share
+   *   row 5:  Retailer | Q4 2022-23       | Q1 2023-24       | ... | Q4 2022-23
+   *
+   * The columns are **quarters**, and one workbook carries five of them. Read
+   * as one header row of metrics, the five "Customer numbers" columns collapse
+   * onto a single `(period, retailer, metric, …)` key and four are silently
+   * overwritten — leaving a real number from the wrong quarter under a
+   * correct-looking label. 0 means the old single-period shape, which some
+   * sheets in the same workbook still use.
+   */
+  periodRow: number;
+  /** Column letters for dimensions that vary row by row. */
   dimensions: {
     retailer: string;
     jurisdiction?: string;
     fuel?: string;
+    customerType?: string;
+  };
+  /**
+   * Dimensions stated once for the whole sheet, as cell references.
+   *
+   * The other half of the same discovery: fuel sits in `B3`, customer segment
+   * in `C3` and jurisdiction in `A4` — above the table, not in a column. Read
+   * as absent, every row gets null for all three, and the Residential, Small
+   * Business and Large sheets of one workbook share keys and overwrite each
+   * other.
+   */
+  sheetDimensions?: {
+    jurisdiction?: string;
+    fuel?: string;
+    customerType?: string;
   };
   metrics: {
     /** Column letter. */
@@ -49,7 +89,23 @@ export interface SheetMapping {
   notes?: string;
 }
 
+/** "B3" → { column: "B", row: 3 }, or null. */
+export function parseCellRef(ref: string): { column: string; row: number } | null {
+  const m = String(ref).trim().toUpperCase().match(/^([A-Z]{1,3})([1-9]\d{0,6})$/);
+  return m ? { column: m[1], row: Number(m[2]) } : null;
+}
+
+/** The first row of data, below whichever header row sits lowest. */
+export function firstDataRow(mapping: SheetMapping): number {
+  return Math.max(mapping.metricRow, mapping.periodRow) + 1;
+}
+
 export interface Observation {
+  /**
+   * The period this number measures, from the column's own header, or null
+   * when the sheet states one period and the release label is it.
+   */
+  periodLabel: string | null;
   /** Canonical key, stable across quarters. What a query filters on. */
   retailer: string;
   /** Exactly as the workbook wrote it, so a wrong fold is recomputable. */
@@ -58,6 +114,8 @@ export interface Observation {
   jurisdictionRaw: string | null;
   fuel: string | null;
   fuelRaw: string | null;
+  customerType: string | null;
+  customerTypeRaw: string | null;
   metric: string;
   metricRaw: string;
   value: number;
@@ -115,13 +173,31 @@ export function numericValue(value: string | number | null): number | null {
 export function mappingProblems(sheet: SheetLike, mapping: SheetMapping): string[] {
   const problems: string[] = [];
 
-  if (!Number.isInteger(mapping.headerRow) || mapping.headerRow < 1) {
-    problems.push(`headerRow must be a positive row number, got ${mapping.headerRow}`);
+  if (!Number.isInteger(mapping.metricRow) || mapping.metricRow < 1) {
+    problems.push(`metricRow must be a positive row number, got ${mapping.metricRow}`);
     return problems;
   }
-  if (mapping.headerRow > sheet.rowCount) {
-    problems.push(`headerRow ${mapping.headerRow} is past the end of the sheet (${sheet.rowCount} rows)`);
+  if (mapping.metricRow > sheet.rowCount) {
+    problems.push(`metricRow ${mapping.metricRow} is past the end of the sheet (${sheet.rowCount} rows)`);
     return problems;
+  }
+  // 0 is the single-period shape. Anything else must be a real row, and must
+  // not be the metric row — one row cannot be both the measure and the
+  // quarter, and accepting that would reintroduce the collapse this redesign
+  // exists to prevent.
+  if (!Number.isInteger(mapping.periodRow) || mapping.periodRow < 0) {
+    problems.push(`periodRow must be 0 or a positive row number, got ${mapping.periodRow}`);
+    return problems;
+  }
+  if (mapping.periodRow > 0) {
+    if (mapping.periodRow > sheet.rowCount) {
+      problems.push(`periodRow ${mapping.periodRow} is past the end of the sheet (${sheet.rowCount} rows)`);
+      return problems;
+    }
+    if (mapping.periodRow === mapping.metricRow) {
+      problems.push(`periodRow and metricRow are both ${mapping.metricRow} — one row cannot be both`);
+      return problems;
+    }
   }
 
   const retailer = mapping.dimensions?.retailer;
@@ -132,6 +208,22 @@ export function mappingProblems(sheet: SheetLike, mapping: SheetMapping): string
   for (const [name, column] of Object.entries(mapping.dimensions ?? {})) {
     if (column && !COLUMN.test(column)) {
       problems.push(`dimensions.${name} is not a column letter: ${JSON.stringify(column)}`);
+    }
+  }
+
+  for (const [name, ref] of Object.entries(mapping.sheetDimensions ?? {})) {
+    if (!ref) continue;
+    const parsed = parseCellRef(ref);
+    if (!parsed) {
+      problems.push(`sheetDimensions.${name} is not a cell reference: ${JSON.stringify(ref)}`);
+      continue;
+    }
+    // A sheet-level dimension pointing at an empty cell is worse than one
+    // left out: it reads as "this sheet says nothing" when the real answer is
+    // "we looked in the wrong place", and every row silently loses the
+    // dimension.
+    if (!text(sheet.cell(parsed.row, parsed.column))) {
+      problems.push(`sheetDimensions.${name} points at ${ref}, which is empty`);
     }
   }
 
@@ -156,21 +248,37 @@ export function mappingProblems(sheet: SheetLike, mapping: SheetMapping): string
     seen.add(entry.column);
 
     // The header the mapping claims is there must actually be there. This is
-    // the check that catches a headerRow off by one, which otherwise reads a
+    // the check that catches a metricRow off by one, which otherwise reads a
     // whole sheet against the wrong labels.
-    const header = text(sheet.cell(mapping.headerRow, entry.column));
+    const header = text(sheet.cell(mapping.metricRow, entry.column));
     if (!header) {
       problems.push(
-        `column ${entry.column} is mapped to ${JSON.stringify(entry.raw)} but row ${mapping.headerRow} is empty there`
+        `column ${entry.column} is mapped to ${JSON.stringify(entry.raw)} but row ${mapping.metricRow} is empty there`
       );
     } else if (numericValue(header) !== null) {
-      // A numeric "header" means headerRow is pointing at data — the classic
+      // A numeric "header" means metricRow is pointing at data — the classic
       // off-by-one. The empty check above misses it precisely because a data
       // row is not empty, and left alone it reads the whole sheet against
       // labels that are really measurements.
       problems.push(
-        `row ${mapping.headerRow} column ${entry.column} holds the number ${header}, not a header — headerRow looks like it points at data`
+        `row ${mapping.metricRow} column ${entry.column} holds the number ${header}, not a header — metricRow looks like it points at data`
       );
+    }
+
+    // When the columns are quarters, every mapped column must carry one. A
+    // column whose period cell is blank or unparseable would otherwise be
+    // dropped silently at extraction; named here, it is a mapping to fix.
+    if (mapping.periodRow > 0) {
+      const periodCell = text(sheet.cell(mapping.periodRow, entry.column));
+      if (!periodCell) {
+        problems.push(
+          `column ${entry.column} has no period in row ${mapping.periodRow} — the columns were read as quarters`
+        );
+      } else if (!normalizePeriodLabel(periodCell)) {
+        problems.push(
+          `column ${entry.column} period ${JSON.stringify(periodCell)} is not a quarter this app can read`
+        );
+      }
     }
   }
 
@@ -186,42 +294,78 @@ export function mappingProblems(sheet: SheetLike, mapping: SheetMapping): string
  */
 export function extractRows(sheet: SheetLike, mapping: SheetMapping): Observation[] {
   const rows: Observation[] = [];
-  const limit = Math.min(sheet.rowCount, mapping.headerRow + MAX_ROWS_PER_SHEET);
+  const start = firstDataRow(mapping);
+  const limit = Math.min(sheet.rowCount, start - 1 + MAX_ROWS_PER_SHEET);
 
-  for (let row = mapping.headerRow + 1; row <= limit; row++) {
+  // Stated once above the table, so read once rather than per row.
+  const sheetDim = (ref?: string): string | null => {
+    if (!ref) return null;
+    const parsed = parseCellRef(ref);
+    if (!parsed) return null;
+    return text(sheet.cell(parsed.row, parsed.column)) || null;
+  };
+  const sheetJurisdiction = sheetDim(mapping.sheetDimensions?.jurisdiction);
+  const sheetFuel = sheetDim(mapping.sheetDimensions?.fuel);
+  const sheetCustomerType = sheetDim(mapping.sheetDimensions?.customerType);
+
+  // One lookup per column, not per cell: the period of column F is the same
+  // for all three hundred retailers below it.
+  const periodByColumn = new Map<string, string | null>();
+  if (mapping.periodRow > 0) {
+    for (const entry of mapping.metrics) {
+      const raw = text(sheet.cell(mapping.periodRow, entry.column));
+      periodByColumn.set(entry.column, raw ? normalizePeriodLabel(raw) : null);
+    }
+  }
+
+  for (let row = start; row <= limit; row++) {
     const retailerRaw = text(sheet.cell(row, mapping.dimensions.retailer));
     if (!retailerRaw) continue;
 
+    // A column wins over the sheet-level cell: if a sheet both states a fuel
+    // above the table and breaks it down per row, the row is the finer truth.
     const jurisdictionRaw = mapping.dimensions.jurisdiction
       ? text(sheet.cell(row, mapping.dimensions.jurisdiction)) || null
-      : null;
+      : sheetJurisdiction;
     const fuelRaw = mapping.dimensions.fuel
       ? text(sheet.cell(row, mapping.dimensions.fuel)) || null
-      : null;
+      : sheetFuel;
+    const customerTypeRaw = mapping.dimensions.customerType
+      ? text(sheet.cell(row, mapping.dimensions.customerType)) || null
+      : sheetCustomerType;
 
-    // Canonical for filtering, raw kept for recomputation — the same pair
-    // `metric`/`metric_raw` already uses, and for the same reason: written
-    // one way this quarter and another way next, it is one series.
-    const dims = canonicalDimensions(retailerRaw, jurisdictionRaw, fuelRaw);
+    const dims = canonicalDimensions(retailerRaw, jurisdictionRaw, fuelRaw, customerTypeRaw);
 
-    // A "Total" or "All retailers" row is not an observation. Stored, it
-    // would be summed together with the parts it is the total of, and every
-    // total `search_aer_performance` reports would come back roughly double —
-    // with the exactness the tool advertises. Refused here rather than
-    // excluded at query time, which every future query would have to remember.
+    // A "Total" or "All retailers" row is not an observation. Stored, it would
+    // be summed together with the parts it is the total of, and every total
+    // `search_aer_performance` reports would come back roughly double — with
+    // the exactness the tool advertises.
     if (dims.skip) continue;
 
     for (const entry of mapping.metrics) {
       const value = numericValue(sheet.cell(row, entry.column));
       if (value === null) continue;
 
+      // When the columns are quarters, a column whose header does not parse
+      // as one is skipped rather than filed under the release's period. That
+      // would be a real number under the wrong three months, which is the
+      // failure this whole shape exists to prevent.
+      let periodLabel: string | null = null;
+      if (mapping.periodRow > 0) {
+        periodLabel = periodByColumn.get(entry.column) ?? null;
+        if (!periodLabel) continue;
+      }
+
       rows.push({
+        periodLabel,
         retailer: dims.retailer,
         retailerRaw: dims.retailerRaw,
         jurisdiction: dims.jurisdiction,
         jurisdictionRaw: dims.jurisdictionRaw,
         fuel: dims.fuel,
         fuelRaw: dims.fuelRaw,
+        customerType: dims.customerType,
+        customerTypeRaw: dims.customerTypeRaw,
         metric: entry.metric,
         metricRaw: entry.raw,
         value,
@@ -233,6 +377,7 @@ export function extractRows(sheet: SheetLike, mapping: SheetMapping): Observatio
 
   return rows;
 }
+
 
 /**
  * The headers actually on the sheet, for the inference prompt and for the

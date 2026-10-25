@@ -49,7 +49,8 @@ const SHEET = sheetOf("Vic", {
 }, 7);
 
 const MAPPING = {
-  headerRow: 3,
+  metricRow: 3,
+  periodRow: 0,
   dimensions: { retailer: "A", jurisdiction: "B" },
   metrics: [
     { column: "C", raw: "Residential customers", metric: "residential_customers" },
@@ -108,14 +109,14 @@ console.log("Rejecting a mapping that does not match the sheet:");
   // Off by one into the data: the header cells hold numbers, which is the
   // tell. An "is it empty" check alone misses this, because a data row is not
   // empty — and left alone it reads the whole sheet against measurements.
-  const offByOne = { ...MAPPING, headerRow: 4 };
-  check("a header row pointing at data is caught",
+  const offByOne = { ...MAPPING, metricRow: 4 };
+  check("a metric row pointing at data is caught",
     mappingProblems(SHEET, offByOne).some((p) => p.includes("points at data")),
     mappingProblems(SHEET, offByOne).join("; "));
 
   // Off by one the other way, into a blank row above the header.
-  const blankHeader = { ...MAPPING, headerRow: 2 };
-  check("a header row pointing at a blank row is caught",
+  const blankHeader = { ...MAPPING, metricRow: 2 };
+  check("a metric row pointing at a blank row is caught",
     mappingProblems(SHEET, blankHeader).some((p) => p.includes("is empty there")),
     mappingProblems(SHEET, blankHeader).join("; "));
 
@@ -128,8 +129,8 @@ console.log("Rejecting a mapping that does not match the sheet:");
   check("a missing retailer dimension is caught",
     mappingProblems(SHEET, noRetailer).some((p) => p.includes("retailer")));
 
-  const past = { ...MAPPING, headerRow: 99 };
-  check("a header row past the end is caught",
+  const past = { ...MAPPING, metricRow: 99 };
+  check("a metric row past the end is caught",
     mappingProblems(SHEET, past).some((p) => p.includes("past the end")));
 
   const dupe = { ...MAPPING, metrics: [MAPPING.metrics[0], { column: "C", raw: "Again", metric: "again" }] };
@@ -148,7 +149,8 @@ console.log("A renamed column stays one series:");
   // it; here that decision is made explicitly so the storage behaviour is
   // pinned without a model in the loop.
   const laterMapping = {
-    headerRow: 3,
+    metricRow: 3,
+    periodRow: 0,
     dimensions: { retailer: "A", jurisdiction: "B" },
     metrics: [{ column: "C", raw: "Residential customer numbers", metric: "residential_customers" }],
   };
@@ -223,6 +225,109 @@ console.log("Fetching a workbook is not fetching a document:");
     SPREADSHEET_KIND.pathname("a.xlsx").startsWith("schedules/") &&
       PDF_KIND.pathname("a.pdf").startsWith("uploads/"),
     `${SPREADSHEET_KIND.pathname("a.xlsx")} | ${PDF_KIND.pathname("a.pdf")}`);
+}
+
+// The shape of a real workbook, transcribed from Schedule 2 Q4 2023-24.
+// Everything above this point was written against a fixture that assumed one
+// header row of metrics; the actual file does not look like that, and reading
+// it the old way stored a real number from the wrong quarter under a
+// correct-looking label. These are the checks that would have caught it.
+console.log("The real two-header layout:");
+{
+  const REAL = sheetOf("Res Elec Cust#s & Mkt Contr", {
+    A3: "Q4 2022-23 to Q4 2023-24", B3: "Electricity", C3: "Residential",
+    A4: "National",
+    B4: "Customer numbers", C4: "Customer numbers", D4: "Market share",
+    A5: "Retailer", B5: "Q4 2022-23", C5: "Q4 2023-24", D5: "Q4 2023-24",
+    A6: "AGL", B6: 1518827, C6: 1509284, D6: 0.2232,
+    A7: "Alinta Energy", B7: 371681, C7: 315535, D7: 0.0546,
+    A8: "Total", B8: 9999999, C8: 9999999, D8: 1,
+  }, 8);
+
+  const REAL_MAPPING = {
+    metricRow: 4,
+    periodRow: 5,
+    dimensions: { retailer: "A" },
+    sheetDimensions: { jurisdiction: "A4", fuel: "B3", customerType: "C3" },
+    metrics: [
+      { column: "B", raw: "Customer numbers", metric: "customer_numbers" },
+      { column: "C", raw: "Customer numbers", metric: "customer_numbers" },
+      { column: "D", raw: "Market share", metric: "market_share" },
+    ],
+  };
+
+  check("the mapping is accepted", mappingProblems(REAL, REAL_MAPPING).length === 0,
+    JSON.stringify(mappingProblems(REAL, REAL_MAPPING)));
+
+  const rows = extractRows(REAL, REAL_MAPPING);
+  const find = (r, m, p) =>
+    rows.find((x) => x.retailer === canonicalRetailer(r) && x.metric === m && x.periodLabel === p);
+
+  // THE bug. Two columns share the metric "Customer numbers" and differ only
+  // by quarter. Read as one header row they collapse onto one key and one
+  // silently overwrites the other.
+  check("two columns of the same metric are two observations, not one",
+    find("AGL", "customer_numbers", "2022-23 Q4")?.value === 1518827 &&
+      find("AGL", "customer_numbers", "2023-24 Q4")?.value === 1509284,
+    JSON.stringify(rows.filter((r) => r.metric === "customer_numbers").map((r) => [r.periodLabel, r.value])));
+
+  // "Q4 2022-23" on the sheet is "2022-23 Q4" stored. Backwards, a quarter
+  // lands under a label that parses but means different months.
+  check("the sheet's quarter-first label is normalised",
+    rows.every((r) => /^\d{4}-\d{2} Q[1-4]$/.test(r.periodLabel)),
+    JSON.stringify([...new Set(rows.map((r) => r.periodLabel))]));
+
+  // Dimensions above the table, not in columns.
+  check("fuel comes from B3", find("AGL", "customer_numbers", "2023-24 Q4")?.fuel === "electricity");
+  check("customer segment comes from C3",
+    find("AGL", "customer_numbers", "2023-24 Q4")?.customerType === "residential");
+  check("jurisdiction in A4 reads as an aggregate, so null not 'national'",
+    find("AGL", "customer_numbers", "2023-24 Q4")?.jurisdiction === null);
+  check("and the raw strings are kept",
+    find("AGL", "customer_numbers", "2023-24 Q4")?.fuelRaw === "Electricity" &&
+      find("AGL", "customer_numbers", "2023-24 Q4")?.customerTypeRaw === "Residential");
+
+  check("the total row is still refused", !rows.some((r) => r.value === 9999999));
+  // 2 retailers x 3 columns.
+  check("every real cell becomes one observation", rows.length === 6,
+    `got ${rows.length}: ${JSON.stringify(rows.map((r) => [r.cellRef, r.periodLabel]))}`);
+  check("provenance points at the actual cell",
+    find("AGL", "market_share", "2023-24 Q4")?.cellRef === "D6");
+}
+
+console.log("Refusing a two-header mapping that does not hold:");
+{
+  const REAL = sheetOf("s", {
+    A4: "National", B4: "Customer numbers", A5: "Retailer", B5: "Q4 2023-24",
+    A6: "AGL", B6: 100,
+  }, 6);
+  const base = {
+    metricRow: 4, periodRow: 5, dimensions: { retailer: "A" },
+    metrics: [{ column: "B", raw: "Customer numbers", metric: "customer_numbers" }],
+  };
+  check("a good one passes", mappingProblems(REAL, base).length === 0,
+    JSON.stringify(mappingProblems(REAL, base)));
+  // One row cannot be both the measure and the quarter; accepting it would
+  // reintroduce the collapse.
+  check("periodRow equal to metricRow is refused",
+    mappingProblems(REAL, { ...base, periodRow: 4 }).some((p) => /cannot be both/.test(p)),
+    JSON.stringify(mappingProblems(REAL, { ...base, periodRow: 4 })));
+  check("a period row pointing somewhere with no quarter is refused",
+    mappingProblems(REAL, { ...base, periodRow: 6 }).some((p) => /period|quarter/i.test(p)),
+    JSON.stringify(mappingProblems(REAL, { ...base, periodRow: 6 })));
+  // A sheet-level dimension pointing at an empty cell reads as "the sheet says
+  // nothing" when the truth is "we looked in the wrong place".
+  check("a sheet dimension pointing at an empty cell is refused",
+    mappingProblems(REAL, { ...base, sheetDimensions: { fuel: "Z9" } })
+      .some((p) => /empty/.test(p)),
+    JSON.stringify(mappingProblems(REAL, { ...base, sheetDimensions: { fuel: "Z9" } })));
+  check("a sheet dimension that is not a cell reference is refused",
+    mappingProblems(REAL, { ...base, sheetDimensions: { fuel: "B" } })
+      .some((p) => /cell reference/.test(p)));
+  // periodRow 0 is the single-period shape some sheets in the same workbook
+  // still use, and must keep working.
+  check("periodRow 0 still means one period from the release",
+    extractRows(REAL, { ...base, metricRow: 4, periodRow: 0 })[0]?.periodLabel === null);
 }
 
 console.log(failures === 0 ? "\nAll AER parsing checks passed." : `\n${failures} check(s) failed.`);

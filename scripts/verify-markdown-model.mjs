@@ -17,6 +17,8 @@
 // Pure: no network, no model, no credentials. Run: pnpm verify:markdown-model
 import {
   MARKDOWN_MAX_OUTPUT_TOKENS,
+  anthropicByok,
+  billsToAnthropic,
   asMb,
   isAnthropicModel,
   markdownModelFor,
@@ -100,6 +102,35 @@ console.log("The output limit is named, not defaulted:");
 console.log("Sizes are reported in units a person can act on:");
 {
   check("bytes render as megabytes", asMb(23 * MB) === "23.0 MB", asMb(23 * MB));
+}
+
+console.log("Who pays for an Anthropic call:")
+{
+  const saved = process.env.ANTHROPIC_API_KEY;
+
+  // Routed through the gateway either way — this only decides the invoice.
+  delete process.env.ANTHROPIC_API_KEY;
+  check("with no key, nothing is sent and Vercel pays",
+    Object.keys(anthropicByok(CLAUDE)).length === 0 && billsToAnthropic(CLAUDE) === false);
+  // Degrading matters more than billing: a missing billing credential is not a
+  // reason to stop ingesting a document.
+  check("so the call still has valid providerOptions to spread",
+    JSON.stringify({ ...anthropicByok(CLAUDE) }) === "{}");
+
+  process.env.ANTHROPIC_API_KEY = "sk-ant-test-not-a-real-key";
+  const opts = anthropicByok(CLAUDE);
+  check("with a key, BYOK is attached under gateway.byok",
+    opts.gateway?.byok?.anthropic?.[0]?.apiKey === "sk-ant-test-not-a-real-key",
+    JSON.stringify(opts).replace("sk-ant-test-not-a-real-key", "<redacted>"));
+  check("and it reports that we are the payer", billsToAnthropic(CLAUDE) === true);
+
+  // The key must never ride along on a call to another provider.
+  check("a Gemini call carries no Anthropic key",
+    Object.keys(anthropicByok(GEMINI)).length === 0, JSON.stringify(anthropicByok(GEMINI)));
+  check("and is not reported as billed to us", billsToAnthropic(GEMINI) === false);
+
+  if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+  else process.env.ANTHROPIC_API_KEY = saved;
 }
 
 console.log(failures === 0 ? "\nAll markdown-model checks passed." : `\n${failures} check(s) failed.`);

@@ -59,6 +59,7 @@ function renderFacets(f: AerFacets): string {
       : null,
     f.jurisdictions.length ? `Jurisdictions: ${f.jurisdictions.join(", ")}` : null,
     f.fuels.length ? `Fuels: ${f.fuels.join(", ")}` : null,
+    f.customerTypes.length ? `Customer types: ${f.customerTypes.join(", ")}` : null,
     f.periods.length ? `Periods: ${f.periods.join(", ")}` : null,
     metricLines ? `Metrics: ${metricLines}` : null,
   ]
@@ -92,15 +93,20 @@ export function registerSearchAerPerformanceTool(server: McpServer): void {
         retailer: z.string().max(200).optional(),
         jurisdiction: z.string().max(50).optional(),
         fuel: z.string().max(50).optional(),
+        customerType: z
+          .string()
+          .max(50)
+          .optional()
+          .describe("residential, small business or large — the segment the AER reports against."),
         metric: z.string().max(200).optional(),
         from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       }),
     },
-    async ({ schedule, retailer, jurisdiction, fuel, metric, from, to }) => {
+    async ({ schedule, retailer, jurisdiction, fuel, customerType, metric, from, to }) => {
       try {
         const [result, facets] = await Promise.all([
-          queryAer({ schedule, retailer, jurisdiction, fuel, metric, from, to }),
+          queryAer({ schedule, retailer, jurisdiction, fuel, customerType, metric, from, to }),
           aerFacets(),
         ]);
 

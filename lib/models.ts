@@ -3,10 +3,9 @@
 // embedding one.
 //
 // Routed through AI Gateway, like everything else here, so spend and traces
-// stay in one place and switching provider is a credential in the gateway
-// rather than a code change. An Anthropic key added there as a BYOK
-// credential is what bills the `anthropic/…` ids below; AI_GATEWAY_API_KEY
-// stays exactly as it is.
+// stay in one place. The gateway is the transport; it is not necessarily who
+// pays. See `anthropicByok` below — Anthropic usage is billed to our own
+// Anthropic account while still going through the gateway.
 // ---------------------------------------------------------------------------
 
 /**
@@ -114,6 +113,41 @@ export function maxInlinePdfBytes(model: string): number | null {
  * Not sent on the Gemini path, which has worked without it and caps lower.
  */
 export const MARKDOWN_MAX_OUTPUT_TOKENS = 128_000;
+
+/**
+ * Bill Anthropic usage to our own Anthropic account, through the gateway.
+ *
+ * By default an `anthropic/…` model routed through AI Gateway is paid for with
+ * Vercel credits. Request-scoped BYOK changes who pays without changing
+ * anything else: the gateway still routes, rate-limits, retries and records
+ * the trace, and Anthropic invoices us directly for the tokens.
+ *
+ * Request-scoped rather than a key saved in the gateway dashboard, for the
+ * reason this file exists at all — a dashboard setting is invisible from the
+ * code, so nobody reading the call site can tell who is being billed. This way
+ * it is in the diff.
+ *
+ * **Degrades rather than failing.** With no `ANTHROPIC_API_KEY` set the call
+ * still runs and Vercel still pays, because a missing billing credential is
+ * not a reason to stop ingesting a document. That makes it silent, which is
+ * the trade — so `createMarkdown` logs which way it went, the same reason
+ * `contextualizeChunks` logs its cache-hit rate.
+ *
+ * Returns a fragment to spread into `providerOptions`, empty when unset. The
+ * key is read here and nowhere else, and is never logged.
+ */
+export function anthropicByok(model: string): {
+  gateway?: { byok: { anthropic: { apiKey: string }[] } };
+} {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !isAnthropicModel(model)) return {};
+  return { gateway: { byok: { anthropic: [{ apiKey }] } } };
+}
+
+/** Whether this call will be billed to us rather than to Vercel. */
+export function billsToAnthropic(model: string): boolean {
+  return isAnthropicModel(model) && Boolean(process.env.ANTHROPIC_API_KEY);
+}
 
 export function isAnthropicModel(model: string): boolean {
   return model.startsWith("anthropic/");
