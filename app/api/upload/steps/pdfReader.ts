@@ -2,7 +2,9 @@ import { FatalError } from "workflow";
 import { generateText } from "ai";
 import {
   MARKDOWN_MAX_OUTPUT_TOKENS,
+  anthropicByok,
   asMb,
+  billsToAnthropic,
   isAnthropicModel,
   markdownModelFor,
 } from "@/lib/models";
@@ -53,6 +55,9 @@ export async function createMarkdown(blobUrl: string): Promise<string> {
     // Anthropic requires max_tokens and defaults it low; Gemini has worked
     // without it and caps lower, so only the path that needs it gets it.
     ...(isAnthropicModel(model) ? { maxOutputTokens: MARKDOWN_MAX_OUTPUT_TOKENS } : {}),
+    // Still through the gateway; billed to our own Anthropic account when a
+    // key is set. Empty otherwise, and the log below says which happened.
+    providerOptions: anthropicByok(model),
     messages: [
       {
         role: "user",
@@ -87,7 +92,8 @@ export async function createMarkdown(blobUrl: string): Promise<string> {
 
   console.log(
     `[createMarkdown] ${model} produced ${text.length} chars ` +
-      `(${usage?.inputTokens ?? "?"} in, ${usage?.outputTokens ?? "?"} out)`
+      `(${usage?.inputTokens ?? "?"} in, ${usage?.outputTokens ?? "?"} out)` +
+      `, billed to ${billsToAnthropic(model) ? "our Anthropic account" : "Vercel"}`
   );
   return text;
 }

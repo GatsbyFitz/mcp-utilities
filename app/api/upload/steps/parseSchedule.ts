@@ -7,6 +7,7 @@ import {
   type SheetLike,
   type SheetMapping,
 } from "@/lib/sheetMapping";
+import { EXTRACTION_MODEL } from "@/lib/models";
 import {
   MAX_DEFINITION_CHARS,
   definitionProblem,
@@ -222,7 +223,7 @@ export async function inferMappings(
 
     try {
       const { output } = await generateText({
-        model: "google/gemini-3.5-flash-lite",
+        model: EXTRACTION_MODEL,
         output: Output.object({ schema: MappingSchema }),
         messages: [{ role: "user", content: prompt(schedule, preview, known) }],
       });

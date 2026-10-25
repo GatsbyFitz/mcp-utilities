@@ -287,6 +287,8 @@ There is no test framework in this repo — `pnpm type-check` and `pnpm lint` ar
 
 Required in `.env.local` (gitignored): `UPSTASH_VECTOR_REST_URL`/`_TOKEN`, `NEO4J_URI`/`_USERNAME`/`_PASSWORD`/`_DATABASE`, `DATABASE_URL`, `BLOB_READ_WRITE_TOKEN`, `AI_GATEWAY_API_KEY`.
 
+`ANTHROPIC_API_KEY` is optional but wanted: it bills Claude usage to our own Anthropic account instead of to Vercel credits, while still routing through AI Gateway (`anthropicByok` in [lib/models.ts](lib/models.ts)). Without it the Claude call still works and Vercel pays, so `createMarkdown` logs which way it went.
+
 `GOOGLE_GENERATIVE_AI_API_KEY` is optional: setting it routes only the multimodal figure embedding through `@ai-sdk/google` directly instead of the gateway (see [lib/embedding.ts](lib/embedding.ts)). Leave it unset unless `pnpm verify:multimodal` says the gateway is dropping the image.
 
 ## Provisioning done by hand
