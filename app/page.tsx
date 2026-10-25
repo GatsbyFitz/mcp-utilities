@@ -22,6 +22,7 @@ import {
   type IngestRunProgress,
 } from "@/lib/ingestSteps";
 import type { DocumentRequest } from "@/lib/documentRequests";
+import { describeWorkbook, type ScheduleRequest } from "@/lib/scheduleRequests";
 import { formatFine, type ComplianceAction } from "@/lib/compliance";
 import { SCHEDULES, SCHEDULE_SUBJECTS, periodBounds } from "@/lib/aerPerformance";
 import { nameFromUrl, type ReferenceSource } from "@/lib/references";
@@ -230,6 +231,21 @@ export default function UploadPage() {
   // by request id so editing one row never disturbs another.
   const [approveUrl, setApproveUrl] = useState<Record<string, string>>({});
   const [approveName, setApproveName] = useState<Record<string, string>>({});
+
+  // The schedule-workbook queue behind `submit_schedule`. Its own state rather
+  // than shared with the document queue: the two resolve through different
+  // routes into different workflows, and a row here is identified by a
+  // schedule number and a quarter rather than a title.
+  const [scheduleRequests, setScheduleRequests] = useState<ScheduleRequest[]>([]);
+  const [scheduleRequestsNotice, setScheduleRequestsNotice] = useState<string | null>(null);
+  const [loadingScheduleRequests, setLoadingScheduleRequests] = useState(false);
+  const [resolvingScheduleId, setResolvingScheduleId] = useState<string | null>(null);
+  // Overrides of what the submitter typed. The period especially: it is the
+  // one field a wrong value in is undetectable later, so the last person to
+  // look at it gets to change it.
+  const [approveWorkbookUrl, setApproveWorkbookUrl] = useState<Record<string, string>>({});
+  const [approvePeriod, setApprovePeriod] = useState<Record<string, string>>({});
+  const [approveSchedule, setApproveSchedule] = useState<Record<string, string>>({});
   const [trackedRuns, setTrackedRuns] = useState<TrackedRun[]>([]);
   const [runProgress, setRunProgress] = useState<Record<string, IngestRunProgress>>({});
   const [notices, setNotices] = useState<string[]>([]);
@@ -346,6 +362,23 @@ export default function UploadPage() {
     }
   }, []);
 
+  const loadScheduleRequests = useCallback(async () => {
+    setLoadingScheduleRequests(true);
+    try {
+      const res = await fetch("/api/scheduleRequests", { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Schedule queue failed: ${res.status}`);
+      }
+      setScheduleRequests((data.items ?? []) as ScheduleRequest[]);
+      setScheduleRequestsNotice((data.notice as string) ?? null);
+    } catch (error) {
+      console.error("Error fetching schedule requests:", error);
+    } finally {
+      setLoadingScheduleRequests(false);
+    }
+  }, []);
+
   const loadIncomplete = useCallback(async () => {
     setLoadingIncomplete(true);
     try {
@@ -385,6 +418,10 @@ export default function UploadPage() {
   useEffect(() => {
     loadRequests();
   }, [loadRequests]);
+
+  useEffect(() => {
+    loadScheduleRequests();
+  }, [loadScheduleRequests]);
 
   useEffect(() => {
     loadCompliance();
@@ -452,6 +489,9 @@ export default function UploadPage() {
             // "Not indexed" flag is exactly the kind of thing nobody notices.
             loadAer();
             loadReferences();
+            // An approved schedule request flips to failed if its run does, and
+            // the row is the only place that reason is shown.
+            loadScheduleRequests();
             return;
           }
         }
@@ -469,7 +509,14 @@ export default function UploadPage() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [trackedRuns, refreshKnowledgeBase, loadIncomplete, loadAer, loadReferences]);
+  }, [
+    trackedRuns,
+    refreshKnowledgeBase,
+    loadIncomplete,
+    loadAer,
+    loadReferences,
+    loadScheduleRequests,
+  ]);
 
   // Retries a failed ingestion from the Markdown it already persisted. The
   // runtime cannot resume a failed run in place, so the server starts a fresh
@@ -1141,6 +1188,66 @@ export default function UploadPage() {
       loadRequests();
     } finally {
       setResolvingId(null);
+    }
+  }
+
+  async function handleResolveScheduleRequest(
+    request: ScheduleRequest,
+    action: "approve" | "reject"
+  ) {
+    const url = (approveWorkbookUrl[request.id] ?? request.sourceUrl).trim();
+    const period = (approvePeriod[request.id] ?? request.periodLabel).trim();
+    const schedule = Number(approveSchedule[request.id] ?? request.schedule);
+
+    if (
+      action === "approve" &&
+      !window.confirm(
+        `Fetch ${url} and ingest it as ${describeWorkbook(schedule, period)}?\n\n` +
+          `Re-ingesting a quarter replaces the rows already stored for it.`
+      )
+    ) {
+      return;
+    }
+
+    setResolvingScheduleId(request.id);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/scheduleRequests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: request.id, action, url, schedule, periodLabel: period }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? `Request ${action} failed: ${res.status}`);
+      }
+      if (action === "approve") {
+        // Same progress card a browser upload gets, tracked as a schedule run
+        // so it draws the right steps.
+        trackRuns((data.runs ?? []) as TrackedRun[], "schedule");
+        setActionMessage({
+          text: `Fetching and ingesting ${describeWorkbook(
+            data.schedule ?? schedule,
+            data.periodLabel ?? period
+          )}.`,
+          error: false,
+        });
+      } else {
+        setActionMessage({
+          text: `Rejected the request for ${describeWorkbook(schedule, period)}.`,
+          error: false,
+        });
+      }
+      loadScheduleRequests();
+    } catch (error) {
+      setActionMessage({
+        text: error instanceof Error ? error.message : `Could not ${action} the request`,
+        error: true,
+      });
+      // A failed fetch flips the row to "failed" server-side, so reload to show it.
+      loadScheduleRequests();
+    } finally {
+      setResolvingScheduleId(null);
     }
   }
 
@@ -1896,6 +2003,170 @@ export default function UploadPage() {
                             {request.sourceUrl}
                           </a>
                         )
+                      )}
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          )}
+
+          {(scheduleRequests.length > 0 || scheduleRequestsNotice) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Inbox className="size-4" />
+                  Schedule workbook requests
+                </CardTitle>
+                <CardDescription>
+                  AER workbooks submitted through <code>submit_schedule</code> without
+                  the ingest secret. Nothing is fetched until you approve it.
+                </CardDescription>
+                <CardAction>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={loadScheduleRequests}
+                    disabled={loadingScheduleRequests}
+                  >
+                    <RefreshCw className={loadingScheduleRequests ? "animate-spin" : ""} />
+                  </Button>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4">
+                {scheduleRequestsNotice && (
+                  <p className="text-sm text-muted-foreground">{scheduleRequestsNotice}</p>
+                )}
+                {!scheduleRequestsNotice && scheduleRequests.length === 0 && (
+                  <p className="text-sm text-muted-foreground">Nothing awaiting review.</p>
+                )}
+                {scheduleRequests.map((request) => {
+                  const pending = request.status === "pending";
+                  const busy = resolvingScheduleId === request.id;
+                  const url = approveWorkbookUrl[request.id] ?? request.sourceUrl;
+                  const period = approvePeriod[request.id] ?? request.periodLabel;
+                  const schedule = approveSchedule[request.id] ?? String(request.schedule);
+                  // Validated as you type, because the period is the field a
+                  // wrong value in is undetectable afterwards: the quarter would
+                  // simply be filed under the wrong label. The route refuses it
+                  // too; this is so the refusal is not a surprise.
+                  const periodOk = periodBounds(period.trim()) !== null;
+                  return (
+                    <div
+                      key={request.id}
+                      className="flex flex-col gap-2 rounded-lg border border-border p-3"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-sm font-medium break-words">
+                          {describeWorkbook(request.schedule, request.periodLabel)}
+                          <span className="ml-2 font-normal text-muted-foreground">
+                            {SCHEDULE_SUBJECTS[request.schedule]}
+                          </span>
+                        </p>
+                        <span
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${
+                            request.status === "pending"
+                              ? "bg-amber-500/15 text-amber-400"
+                              : request.status === "approved"
+                                ? "bg-green-500/15 text-green-400"
+                                : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          {request.status}
+                        </span>
+                      </div>
+                      {request.note && (
+                        <p className="text-xs text-muted-foreground">{request.note}</p>
+                      )}
+                      {request.statusDetail && (
+                        <p className="text-xs text-red-400">{request.statusDetail}</p>
+                      )}
+                      {request.requestedBy && (
+                        <p className="text-xs text-muted-foreground">
+                          Requested by {request.requestedBy}
+                        </p>
+                      )}
+
+                      {pending ? (
+                        <>
+                          {/* Prefilled from what was submitted, all editable.
+                              The submitter read them off a release page; you
+                              are the one who can check that. */}
+                          <Input
+                            value={url}
+                            onChange={(e) =>
+                              setApproveWorkbookUrl((previous) => ({
+                                ...previous,
+                                [request.id]: e.target.value,
+                              }))
+                            }
+                            placeholder="https://… (.xlsx or .xlsm to fetch)"
+                            className="text-xs"
+                          />
+                          <div className="flex gap-2">
+                            <select
+                              value={schedule}
+                              onChange={(e) =>
+                                setApproveSchedule((previous) => ({
+                                  ...previous,
+                                  [request.id]: e.target.value,
+                                }))
+                              }
+                              className="rounded-md border border-input bg-transparent px-2 py-1 text-xs"
+                            >
+                              {SCHEDULES.map((n) => (
+                                <option key={n} value={n}>
+                                  Schedule {n}
+                                </option>
+                              ))}
+                            </select>
+                            <Input
+                              value={period}
+                              onChange={(e) =>
+                                setApprovePeriod((previous) => ({
+                                  ...previous,
+                                  [request.id]: e.target.value,
+                                }))
+                              }
+                              placeholder="2023-24 Q3"
+                              className="text-xs"
+                            />
+                          </div>
+                          {!periodOk && (
+                            <p className="text-xs text-amber-400">
+                              Not a quarter this can store. Expected something like
+                              &quot;2023-24 Q3&quot; — Q1 is July–September.
+                            </p>
+                          )}
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => handleResolveScheduleRequest(request, "approve")}
+                              disabled={busy || !url.trim() || !periodOk}
+                            >
+                              {busy ? <Loader2 className="animate-spin" /> : <Check />}
+                              Approve &amp; ingest
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleResolveScheduleRequest(request, "reject")}
+                              disabled={busy}
+                            >
+                              <X />
+                              Reject
+                            </Button>
+                          </div>
+                        </>
+                      ) : (
+                        <a
+                          href={request.sourceUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="truncate text-xs text-muted-foreground hover:underline"
+                        >
+                          {request.sourceUrl}
+                        </a>
                       )}
                     </div>
                   );

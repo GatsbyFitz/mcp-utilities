@@ -17,10 +17,12 @@ import { indexReferencePage } from "@/app/api/indexReference/workflow";
 // add_reference — the other half of find_reference
 // ---------------------------------------------------------------------------
 // find_reference can only route to pages something has registered, and the
-// thing best placed to register them is whatever just read one. This server
-// cannot: the pages worth referencing render client-side and are not
-// resolvable from its network. The caller has already opened the page, so it
-// can describe it.
+// thing best placed to register them is whatever just read one. Not because
+// this server cannot fetch them — it can, and an earlier comment here claiming
+// otherwise was checked and wrong — but because a descriptor states which
+// *questions* a page answers, and that is a judgement about the asker rather
+// than a property of the page. The caller has already opened it and knows why
+// it wanted to. See .claude/conventions/data-stores.md.
 //
 // The descriptor is written, not scraped, and that is the whole contract: it
 // says what the page *covers*, so it survives the page changing. A summary

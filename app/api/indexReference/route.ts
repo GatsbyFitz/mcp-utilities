@@ -23,11 +23,13 @@ import { indexReferencePage } from "./workflow";
  * server does the rest. The difference is that no bytes are transferred and
  * nothing is fetched — the descriptor is supplied, not scraped.
  *
- * That is deliberate rather than lazy. This server often cannot reach the
- * pages worth referencing: AEMO's developer portal renders client-side and is
- * not resolvable from every network, so a descriptor built by fetching would
- * describe an empty shell while looking perfectly indexed. Whoever submits the
- * URL has already read the page; they are the better source.
+ * That is deliberate rather than lazy, though not for the reason this comment
+ * used to give: AEMO's portal is reachable and server-rendered, which was
+ * checked. The real reason is that a descriptor states which *questions* a
+ * page answers, and no amount of fetching produces that — the page says what
+ * it does, while routing needs to know what someone would come looking for.
+ * Whoever submits the URL has already read it and knows why they wanted it.
+ * See .claude/conventions/data-stores.md.
  */
 
 export async function GET(req: NextRequest) {
