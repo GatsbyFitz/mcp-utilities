@@ -8,6 +8,7 @@ import { toCitation, citationLine, figureLine, sourceList } from "@/lib/citation
 import { fetchFigureImages } from "@/lib/figureImages";
 import { sparseVector } from "@/lib/sparse";
 import { EMBEDDING_MODEL, EMBEDDING_DIMENSIONS } from "@/lib/embedding";
+import { RERANK_MODEL } from "@/lib/models";
 
 
 // The rerank provider rejects any single document longer than 32,000 with a
@@ -137,7 +138,7 @@ export function registerSearchDocsTool(server: McpServer): void {
         }
 
         const { ranking } = await rerank({
-          model: "cohere/rerank-v3.5",
+          model: RERANK_MODEL,
           query,
           documents: rerankable.map((c) => capForRerank(c.text)),
           topN: Math.min(topN, rerankable.length),

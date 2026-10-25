@@ -10,7 +10,7 @@ import { put } from "@vercel/blob";
 // ---------------------------------------------------------------------------
 
 // Persists the converted Markdown so re-embedding — and retrying a failed
-// ingestion — can skip the Gemini PDF→Markdown step entirely instead of
+// ingestion — can skip the PDF→Markdown step entirely instead of
 // re-running it on every attempt.
 export async function uploadMarkdown(fileName: string, markdown: string): Promise<string> {
   "use step";

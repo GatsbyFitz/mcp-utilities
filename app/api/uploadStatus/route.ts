@@ -7,6 +7,7 @@ import { WorkflowRunNotFoundError } from "workflow/internal/errors";
 import {
   INGEST_STEPS,
   stepsForWorkflow,
+  type IngestRunOutcome,
   type IngestRunProgress,
   type IngestRunStatus,
   type IngestStepProgress,
@@ -110,6 +111,7 @@ async function readRunProgress(runId: string): Promise<IngestRunProgress> {
 
   const steps = await readStepStatuses(runId);
   const expected = stepsForWorkflow(workflowName);
+  const outcome = await readOutcome(run, status);
 
   const progress: IngestStepProgress[] = expected.map((step) => {
     // A branching workflow reports whichever step it actually ran, so an entry
@@ -148,10 +150,48 @@ async function readRunProgress(runId: string): Promise<IngestRunProgress> {
     resumable:
       (status === "failed" || status === "cancelled") &&
       steps.get(RESUME_POINT_STEP)?.status === "completed",
+    outcome,
     workflowName,
     startedAt: startedAt?.toISOString() ?? null,
     completedAt: completedAt?.toISOString() ?? null,
   };
+}
+
+/**
+ * What the run produced, from the workflow's own return value.
+ *
+ * Read **only** once the run has completed. `run.returnValue` polls on a
+ * one-second loop until the run finishes, so asking for it mid-flight would
+ * hold a status poll open for the length of the ingestion. For a completed run
+ * it resolves on the first read.
+ *
+ * Not taken from the step journal, which is where the counts physically are:
+ * `steps.list` can only resolve *all* step data or none, and a resolved step
+ * input carries the whole PDF and the full Markdown. The run's return value is
+ * the small end of the same information.
+ */
+async function readOutcome(
+  run: ReturnType<typeof getRun>,
+  status: IngestRunStatus
+): Promise<IngestRunOutcome | null> {
+  if (status !== "completed") return null;
+
+  try {
+    const value = (await run.returnValue) as IngestRunOutcome | undefined;
+    if (!value || typeof value !== "object") return null;
+
+    // Only the two reports are forwarded. The rest of a workflow's return
+    // value is counts the progress card already has, and forwarding it
+    // wholesale would ship whatever a future workflow happens to return.
+    const { figureReport, processReport } = value;
+    if (!figureReport && !processReport) return null;
+    return { figureReport, processReport };
+  } catch (error) {
+    // Never let the outcome cost the progress: a run whose return value cannot
+    // be hydrated has still finished, and the steps above say so.
+    console.warn("[uploadStatus] could not read the run's return value:", error);
+    return null;
+  }
 }
 
 // Maps short step names ("extractGraph") to their latest reported state.
@@ -207,6 +247,7 @@ function unknownRun(runId: string): IngestRunProgress {
     failedStepLabel: null,
     error: null,
     resumable: false,
+    outcome: null,
     workflowName: null,
     startedAt: null,
     completedAt: null,

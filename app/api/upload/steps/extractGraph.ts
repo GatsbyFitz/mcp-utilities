@@ -1,4 +1,5 @@
 import { embedMany, generateText, Output } from "ai";
+import { EXTRACTION_MODEL } from "@/lib/models";
 import * as z from "zod/v4";
 import { writeGraph } from "@/lib/graph";
 import { chunkId, chunkText, extractTitle } from "@/lib/chunking";
@@ -88,7 +89,7 @@ export async function extractGraph(fileName: string, markdown: string) {
     let output: z.infer<typeof ExtractionSchema>;
     try {
       ({ output } = await generateText({
-        model: "google/gemini-3.5-flash-lite",
+        model: EXTRACTION_MODEL,
         output: Output.object({ schema: ExtractionSchema }),
         prompt: `${EXTRACT_PROMPT}\n\nDocument: ${title}\n\nExcerpt:\n${chunk}`,
       }));

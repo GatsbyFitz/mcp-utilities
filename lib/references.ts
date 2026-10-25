@@ -85,6 +85,51 @@ export const MAX_REFERENCE_KEY_TERMS = 40;
 export const MAX_REFERENCE_RESULTS = 5;
 
 /**
+ * Candidates pulled from the index before reranking.
+ *
+ * Wider than `MAX_REFERENCE_RESULTS` because reranking can only reorder what
+ * it is given: retrieving five and returning five makes the reranker a
+ * formality. Descriptors are small, so a wide pool is cheap.
+ */
+export const REFERENCE_CANDIDATES = 25;
+
+/**
+ * The relevance a reranked match must clear to be offered at all.
+ *
+ * This exists because the hybrid score cannot do the job. Upstash fuses the
+ * dense and sparse halves with reciprocal-rank fusion, so a match scores
+ * 1/60 + 1/60 = 0.0333 for being rank 1 on both retrievers and 1/60 = 0.0167
+ * for one — a *rank* score, carrying no absolute relevance. Measured against
+ * a single-row index, "how big a document can I send" and "what are the AEMO
+ * NEM dispatch bidding endpoints" both scored exactly 0.0333 against the same
+ * page. There is nothing to threshold there.
+ *
+ * The reranker's score is a genuine relevance judgement, so it can be. Without
+ * a floor, reranking would only reorder a wrong answer into first place:
+ * `find_reference` tells the caller to go and read the page, so handing over an
+ * unrelated one is worse than returning nothing.
+ *
+ * Deliberately low, and env-overridable. A floor set too high silently hides
+ * pages that do cover the question, which is the failure this tool exists to
+ * avoid; too low merely offers a weak match the caller can judge, because the
+ * score now travels in the text it reads. Tune it from the scores observed in
+ * use rather than from this starting value.
+ */
+export const MIN_REFERENCE_RELEVANCE = Number(process.env.MIN_REFERENCE_RELEVANCE ?? 0.05);
+
+/**
+ * The reranked matches worth offering. Pure, so the floor is checked offline
+ * rather than only observed in production.
+ *
+ * Takes already-reranked scores: the floor is meaningful against a relevance
+ * judgement and meaningless against the fused retrieval rank, so passing the
+ * wrong one in is the mistake this signature is shaped to discourage.
+ */
+export function relevantReferences<T extends { score: number }>(ranked: readonly T[]): T[] {
+  return ranked.filter((r) => r.score >= MIN_REFERENCE_RELEVANCE);
+}
+
+/**
  * The key a URL is addressed by.
  *
  * Derived rather than free-form so the same page submitted twice updates in

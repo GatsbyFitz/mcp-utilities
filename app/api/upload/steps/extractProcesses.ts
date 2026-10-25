@@ -1,4 +1,5 @@
 import { generateText, embedMany, Output } from "ai";
+import { EXTRACTION_MODEL } from "@/lib/models";
 import * as z from "zod/v4";
 import { mapPool } from "@/lib/pool";
 import { vectorIndex, escapeFilterValue } from "@/lib/vector";
@@ -10,6 +11,7 @@ import { checkMermaid, nodeLabels } from "@/lib/mermaidCheck";
 import {
   PROCESS_KIND,
   processId,
+  type ProcessReport,
   MAX_MERMAID_CHARS,
   MAX_PROCESS_ACTORS,
   MAX_PROCESS_TITLE,
@@ -17,6 +19,8 @@ import {
 } from "@/lib/processes";
 import { figureId, figureIdPrefix } from "@/lib/figures";
 import type { BlobInfo } from "./recordUpload";
+
+export type { ProcessReport } from "@/lib/processes";
 
 // ---------------------------------------------------------------------------
 // Step: read the process out of a figure, as Mermaid
@@ -155,8 +159,18 @@ export async function extractProcesses(
   /** Null on a re-scan, which has no reason to fetch the Markdown just for a title. */
   markdown: string | null,
   sources: ProcessSource[]
-): Promise<{ processCount: number; repaired: number; invalid: number }> {
+): Promise<ProcessReport> {
   "use step";
+
+  const report: ProcessReport = {
+    figuresAvailable: sources.length,
+    examined: 0,
+    notProcess: 0,
+    unreadable: 0,
+    processCount: 0,
+    repaired: 0,
+    invalid: 0,
+  };
 
   // Always clear first, even with nothing to add: a re-scan that finds fewer
   // processes than last time must not leave the surplus behind, and upsert
@@ -165,26 +179,54 @@ export async function extractProcesses(
     filter: `source = '${escapeFilterValue(fileName)}' AND kind = '${PROCESS_KIND}'`,
   });
 
-  if (sources.length === 0) return { processCount: 0, repaired: 0, invalid: 0 };
+  if (sources.length === 0) {
+    // Not a failure — but not "this document has no processes" either. It has
+    // no *figures*, and nothing here can read a process out of nothing.
+    console.warn(
+      `[extractProcesses] ${fileName}: no figures to read — extract figures first.`
+    );
+    return report;
+  }
 
   let repaired = 0;
 
   // mapPool awaits every runner together, so one unhandled throw would discard
   // a document that has already paid for parsing, embedding, the graph and its
   // figures. A figure that cannot be read is simply not a process.
-  const results = await mapPool(sources.slice(0, MAX_PROCESSES_PER_DOCUMENT), CONCURRENCY, async (source, n) => {
+  const examined = sources.slice(0, MAX_PROCESSES_PER_DOCUMENT);
+  report.examined = examined.length;
+
+  const results = await mapPool(examined, CONCURRENCY, async (source, n) => {
     try {
       const outcome = await processFor(fileName, source, n);
-      if (outcome?.wasRepaired) repaired++;
-      return outcome?.process ?? null;
+      // "Not a process" and "could not read it" are counted apart: the first
+      // is the correct answer for a bar chart, the second is a fault.
+      if (outcome.kind === "notProcess") {
+        report.notProcess++;
+        return null;
+      }
+      if (outcome.kind === "unreadable") {
+        report.unreadable++;
+        return null;
+      }
+      if (outcome.wasRepaired) repaired++;
+      return outcome.process;
     } catch (error) {
+      report.unreadable++;
       console.warn(`[extractProcesses] ${fileName} figure ${n}: skipped —`, error);
       return null;
     }
   });
 
   const processes = results.filter((p): p is ExtractedProcess => p !== null);
-  if (processes.length === 0) return { processCount: 0, repaired, invalid: 0 };
+  report.repaired = repaired;
+  if (processes.length === 0) {
+    console.log(
+      `[extractProcesses] ${fileName}: no processes from ${report.examined} figure(s)` +
+        ` — ${report.notProcess} were not processes, ${report.unreadable} unreadable`
+    );
+    return report;
+  }
 
   const title = markdown ? extractTitle(markdown, fileName) : fileName;
   const { version, publisher } = documentCitationMeta(fileName);
@@ -232,13 +274,16 @@ export async function extractProcesses(
     }))
   );
 
-  const invalid = processes.filter((p) => !p.mermaidValid).length;
+  report.processCount = processes.length;
+  report.invalid = processes.filter((p) => !p.mermaidValid).length;
+
   console.log(
-    `[extractProcesses] ${fileName}: ${processes.length} process(es) from ${sources.length} figure(s)` +
-      `, ${repaired} repaired, ${invalid} still invalid`
+    `[extractProcesses] ${fileName}: ${report.processCount} process(es) from ${report.examined} figure(s)` +
+      `, ${report.notProcess} not processes, ${report.unreadable} unreadable` +
+      `, ${report.repaired} repaired, ${report.invalid} still invalid`
   );
 
-  return { processCount: processes.length, repaired, invalid };
+  return report;
 }
 
 /** What gets embedded: the title, the actors, and the text on the diagram. */
@@ -248,17 +293,25 @@ function embeddableText(process: ExtractedProcess): string {
     .join(" | ");
 }
 
+/** What looking at one figure concluded. */
+type ProcessOutcome =
+  | { kind: "process"; process: ExtractedProcess; wasRepaired: boolean }
+  /** The model looked and said it is not a process. The right answer, often. */
+  | { kind: "notProcess" }
+  /** The crop could not be fetched or was too large to send. A fault. */
+  | { kind: "unreadable" };
+
 /** One figure: look at it, and transcribe it if it is a process. */
 async function processFor(
   fileName: string,
   source: ProcessSource,
   n: number
-): Promise<{ process: ExtractedProcess; wasRepaired: boolean } | null> {
+): Promise<ProcessOutcome> {
   const image = await fetchCrop(source.imageUrl);
-  if (!image) return null;
+  if (!image) return { kind: "unreadable" };
 
   const first = await askForMermaid(image, PROMPT);
-  if (!first.isProcess || !first.mermaid.trim()) return null;
+  if (!first.isProcess || !first.mermaid.trim()) return { kind: "notProcess" };
 
   let mermaid = first.mermaid.trim();
   let problems = checkMermaid(mermaid);
@@ -295,6 +348,7 @@ async function processFor(
   }
 
   return {
+    kind: "process",
     wasRepaired,
     process: {
       figureId: source.figureId,
@@ -313,7 +367,7 @@ async function askForMermaid(
   prompt: string
 ): Promise<{ isProcess: boolean; title: string; actors: string[]; mermaid: string }> {
   const { output } = await generateText({
-    model: "google/gemini-3.5-flash-lite",
+    model: EXTRACTION_MODEL,
     output: Output.object({ schema: ProcessSchema }),
     messages: [
       {

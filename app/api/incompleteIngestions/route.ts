@@ -51,7 +51,7 @@ export async function GET(req: NextRequest) {
 /**
  * POST /api/incompleteIngestions  { fileName }
  *
- * Finishes one of them from the Markdown it already has, skipping the Gemini
+ * Finishes one of them from the Markdown it already has, skipping the
  * PDF→Markdown parse. Everything the run needs is read from the row rather than
  * taken from the request, so a caller can only name a document, never point the
  * pipeline at a blob of its choosing.

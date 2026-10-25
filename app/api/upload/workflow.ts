@@ -16,7 +16,7 @@ export async function ingestPdf(input: IngestInput) {
   const blob = input.blob;
   const markdown = await createMarkdown(blob.url);
 
-  // Persisted so a future re-embed can skip the Gemini PDF→Markdown step
+  // Persisted so a future re-embed can skip the PDF→Markdown step
   // entirely instead of re-parsing the PDF from scratch every time.
   const markdownUrl = await uploadMarkdown(input.fileName, markdown);
 
@@ -37,14 +37,18 @@ export async function ingestPdf(input: IngestInput) {
   // here moves a text chunk ID or the chunkIds extractGraph stored on Neo4j
   // relationships. Placed after extractGraph so a figure failure cannot cost
   // the graph, which is the more expensive of the two.
-  const figures = await extractFigures(input.fileName, blob.url, markdown);
+  const { figures, report: figureReport } = await extractFigures(
+    input.fileName,
+    blob.url,
+    markdown
+  );
   const { figureCount } = await embedFigures(input.fileName, blob, markdown, figures);
 
   // Last, and after the figures it reads: a figure carries the process in its
   // arrows, and this is the step that turns them into something a model can
   // follow. Newest and flakiest of the lot, so a failure here costs nothing
   // that came before it — the same reason figures sit after the graph.
-  const { processCount } = await extractProcesses(
+  const processReport = await extractProcesses(
     input.fileName,
     blob,
     markdown,
@@ -60,7 +64,11 @@ export async function ingestPdf(input: IngestInput) {
     entities: entityCount,
     relations: relationCount,
     figures: figureCount,
-    processes: processCount,
+    processes: processReport.processCount,
+    // Carried so the progress card can explain a zero instead of just printing
+    // it. See FigureReport / ProcessReport.
+    figureReport,
+    processReport,
   };
 }
 
@@ -69,7 +77,7 @@ export async function ingestPdf(input: IngestInput) {
  * persisted. A failed run is terminal — the runtime cannot resume it in place
  * (re-enqueueing a failed run is a no-op), so this is a fresh run that simply
  * starts past the work that already succeeded: the PDF is not re-uploaded and,
- * crucially, the Gemini PDF→Markdown parse never runs again.
+ * crucially, the PDF→Markdown parse never runs again.
  *
  * The tail is deliberately identical to `ingestPdf`'s and to
  * `reembedDocument`'s — the same steps in the same order, so chunk boundaries
@@ -95,10 +103,14 @@ export async function resumeIngest(resume: ResumePoint) {
   // here moves a text chunk ID or the chunkIds extractGraph stored on Neo4j
   // relationships. Placed after extractGraph so a figure failure cannot cost
   // the graph, which is the more expensive of the two.
-  const figures = await extractFigures(resume.fileName, resume.blob.url, markdown);
+  const { figures, report: figureReport } = await extractFigures(
+    resume.fileName,
+    resume.blob.url,
+    markdown
+  );
   const { figureCount } = await embedFigures(resume.fileName, resume.blob, markdown, figures);
 
-  const { processCount } = await extractProcesses(
+  const processReport = await extractProcesses(
     resume.fileName,
     resume.blob,
     markdown,
@@ -120,6 +132,10 @@ export async function resumeIngest(resume: ResumePoint) {
     entities: entityCount,
     relations: relationCount,
     figures: figureCount,
-    processes: processCount,
+    processes: processReport.processCount,
+    // Carried so the progress card can explain a zero instead of just printing
+    // it. See FigureReport / ProcessReport.
+    figureReport,
+    processReport,
   };
 }
