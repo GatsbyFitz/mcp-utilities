@@ -7,7 +7,7 @@ import {
   type SheetLike,
   type SheetMapping,
 } from "@/lib/sheetMapping";
-import { EXTRACTION_MODEL } from "@/lib/models";
+import { SHEET_MAPPING_MODEL, anthropicByok } from "@/lib/models";
 import {
   MAX_DEFINITION_CHARS,
   definitionProblem,
@@ -240,7 +240,8 @@ export async function inferMappings(
 
     try {
       const { output } = await generateText({
-        model: EXTRACTION_MODEL,
+        model: SHEET_MAPPING_MODEL,
+        providerOptions: anthropicByok(SHEET_MAPPING_MODEL),
         output: Output.object({ schema: MappingSchema }),
         messages: [{ role: "user", content: prompt(schedule, preview, known) }],
       });

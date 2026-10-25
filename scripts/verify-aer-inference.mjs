@@ -15,21 +15,38 @@
 // confidently wrong rather than obviously wrong.
 //
 // Needs `ANTHROPIC_API_KEY` and skips cleanly without one, the same shape as
-// stage B of `verify:multimodal`. The model here is Claude called directly;
-// production infers with EXTRACTION_MODEL through AI Gateway, so a pass means
-// the prompt and the pipeline are sound, not that every model will comply.
+// stage B of `verify:multimodal`. It calls Anthropic directly rather than
+// through the gateway — one fewer moving part for a check that is about the
+// prompt — but on `SHEET_MAPPING_MODEL` itself rather than a model id typed in
+// here, because a check against a model production does not use proves nothing
+// about production.
 //
 // Run: pnpm verify:aer-inference
 import fs from "node:fs";
 import path from "node:path";
 import { extractRows, mappingProblems } from "@/lib/sheetMapping";
 import { canonicalMetric } from "@/lib/aerPerformance";
+import { SHEET_MAPPING_MODEL, isAnthropicModel } from "@/lib/models";
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
 if (!apiKey) {
   console.log("ANTHROPIC_API_KEY not set — skipping (this check needs a live model).");
   process.exit(0);
 }
+
+// The gateway slug carries a provider prefix the Anthropic API does not take.
+// Refused rather than guessed: if inference moves to another provider, this
+// check cannot speak for it and should say so instead of testing a model
+// nothing uses.
+if (!isAnthropicModel(SHEET_MAPPING_MODEL)) {
+  console.error(
+    `SHEET_MAPPING_MODEL is ${SHEET_MAPPING_MODEL}, which this check cannot call directly. ` +
+      `Point it at that provider or run the inference through the gateway.`
+  );
+  process.exit(1);
+}
+const model = SHEET_MAPPING_MODEL.replace(/^anthropic\//, "");
+console.log(`Inferring with ${model} (SHEET_MAPPING_MODEL).`);
 
 // The prompt is read out of the step rather than copied, so this cannot drift
 // from what production sends. Only the TypeScript signature is rewritten.
@@ -81,7 +98,7 @@ const res = await fetch("https://api.anthropic.com/v1/messages", {
   method: "POST",
   headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
   body: JSON.stringify({
-    model: "claude-sonnet-5-5",
+    model,
     max_tokens: 8000,
     messages: [{
       role: "user",

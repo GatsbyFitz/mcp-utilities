@@ -18,11 +18,26 @@ Retry semantics come from the error type: throw `FatalError` from `workflow` to 
 
 Every model id lives in [lib/models.ts](../../lib/models.ts), and the split in it is deliberate.
 
-`createMarkdown` runs **`anthropic/claude-sonnet-5-5`** (`MARKDOWN_MODEL`, env-overridable). Everything downstream of it — `contextualizeChunks`, `extractGraph`, `extractFigures`, `extractProcesses` — stays on `EXTRACTION_MODEL`, still `google/gemini-3.5-flash-lite`.
+**There is no `EXTRACTION_MODEL`.** There was, and a single constant covering five calls made moving them one decision when they do not deserve one — they differ by two orders of magnitude in volume and they fail in unrelated ways. So each names its own model and each moved, or did not, for its own reason:
+
+| Constant | Call | Model | Volume |
+| --- | --- | --- | --- |
+| `MARKDOWN_MODEL` | `createMarkdown` | `anthropic/claude-sonnet-5-5` (env-overridable) | 1 per document |
+| `SHEET_MAPPING_MODEL` | `inferMappings` | `anthropic/claude-sonnet-5-5` | ~16 per workbook |
+| `PROCESS_MODEL` | `extractProcesses` | `anthropic/claude-sonnet-5-5` | 1 per figure |
+| `GRAPH_MODEL` | `extractGraph` | `anthropic/claude-haiku-5-5` | ~80 per document |
+| `CONTEXT_MODEL` | `contextualizeChunks` | `anthropic/claude-haiku-5-5` | ~80 per document |
+| `FIGURE_BOX_MODEL` | `extractFigures` | `google/gemini-3.5-flash-lite` | 1 per marked page |
 
 The parse is the one call that runs **once per document**, so it is the one place a stronger model costs a document rather than a document times eighty. It is also the call the rest of the pipeline is *gated* on rather than fed by: `figurePagesFrom` finds pages to rasterise by scanning this Markdown for `[Figure:` markers, so a parse that omits them yields zero figures, zero processes and no error at all. The same PDF has parsed to 60 figures on one run and none on another. Instruction-following on that one marker rule is what the model is chosen for; quality here is not cosmetic, it is the difference between the figure pipeline existing and silently not.
 
-The extraction steps are not left on Gemini by inertia. `contextualizeChunks` sends the whole document as the prefix of every call and relies on Gemini's *implicit* prefix caching to avoid paying for it ~80 times — Anthropic caches only against an explicit `cache_control` breakpoint, so moving that model without adding one turns the cheapest step in the pipeline into the most expensive. `extractFigures` returns normalised boxes in Gemini's own `[ymin, xmin, ymax, xmax]` convention, and a mis-ordered box still validates and still produces a plausible PNG, so changing that model needs verification against rendered crops rather than a swap.
+Sonnet for the other two that are *decisions* rather than volume. `inferMappings` decides whether a regulatory number is filed under the right quarter — the AER's columns are periods, and a mapping that reads one header row of metrics collapses five quarters onto one key; `pnpm verify:aer-inference` runs this exact constant against a real sheet and checks five values against the cells they came from. `extractProcesses` transcribes a flowchart into Mermaid, which fails *silently* as an empty iframe, so a weaker model costs diagrams rather than erroring.
+
+Haiku for the two per-chunk calls, which is the tier it exists for: a short bounded task at high volume.
+
+**`contextualizeChunks` needed a code change, not a new string.** It sends the whole document on every call and varies only the trailing chunk, so the step's input is the document times the chunk count. Gemini absorbed that with *implicit* prefix caching; Anthropic caches only up to an explicit `cache_control` breakpoint. The prompt is therefore two message parts — the document carrying the breakpoint, then the chunk — in that order and no other, because caching is prefix *matching*: anything that varies must come after everything that does not. Put the breakpoint at the end of the whole prompt instead and every call writes a distinct entry that nothing reads, which costs **more** than not caching. Both mistakes are silent — correct output, 10× the bill — so `pnpm verify:context-caching` stubs `fetch`, runs the real step and asserts what the SDK would send, and the step logs reads and writes separately per document because write-without-read is the expensive one.
+
+**`extractFigures` is deliberately still Gemini**, the only one that did not move. It returns normalised boxes in Gemini's own `[ymin, xmin, ymax, xmax]` convention, and a box read in the wrong order still falls in range, still passes validation and still produces a plausible PNG — a tall slice down the page with the diagram cut off. There is no error to catch, so moving it means rendering crops and looking at them, not swapping a string.
 
 Two provider limits the parse now has to respect, both handled in `lib/models.ts` and checked offline by `pnpm verify:markdown-model`:
 
@@ -33,7 +48,7 @@ Two provider limits the parse now has to respect, both handled in `lib/models.ts
 
 It needs `ANTHROPIC_API_KEY` set in the deployment, and **degrades rather than failing**: with no key the call still runs and Vercel still pays, because a missing billing credential is not a reason to stop ingesting a document. That makes it silent, so `createMarkdown` logs which way each parse went.
 
-Two calls cannot move to Anthropic at all, whatever the billing: `google/gemini-embedding-2` because Anthropic publishes no embedding model, and `cohere/rerank-v3.5` because it publishes no reranker. The extraction calls could, and are held back by the reasons above, not by billing.
+Every `anthropic/…` call attaches it: the parse, the sheet mapping, the graph, the contextualization and the processes. Two calls cannot move to Anthropic at all, whatever the billing: `google/gemini-embedding-2` (`EMBEDDING_MODEL`) because Anthropic publishes no embedding model, and `cohere/rerank-v3.5` (`RERANK_MODEL`) because it publishes no reranker. `FIGURE_BOX_MODEL` is held back by the box convention above, not by billing.
 
 ## Embeddings
 
