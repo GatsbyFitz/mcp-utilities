@@ -225,7 +225,7 @@ Everything below is registered in `app/mcp/tools/index.ts`, `app/mcp/prompts/ind
 
 **`find_reference`** — Routes a question to a live reference page and returns its URL, for sources kept current rather than indexed: API documentation and specifications, where being out of date is the worst failure a copy can have. What is indexed is a *descriptor* of what each page covers, not its text, so the pointer stays good across releases that change every endpoint behind it. The caller fetches the page itself — the server knows what exists and what is relevant, the client knows how to read it.
 
-**`add_reference`** — Registers a live page so `find_reference` can route to it later, storing a written description of what the page covers rather than a copy of it. The page is embedded on the way in, so it is retrievable immediately. Exists because the caller that just read a page is better placed to describe it than this server, which frequently cannot reach the pages worth referencing at all.
+**`add_reference`** — Registers a live page so `find_reference` can route to it later, storing a written description of what the page covers rather than a copy of it. Exists because the caller that just read a page is better placed to describe it than this server, which frequently cannot reach the pages worth referencing at all. Indexing runs as a durable workflow visible on the upload page's progress card, so the tool returns *queued* rather than *indexed* and the page becomes searchable a few seconds later.
 
 **`echo`** — Trivial diagnostic tool that echoes back a message. Useful for confirming the MCP connection is alive.
 

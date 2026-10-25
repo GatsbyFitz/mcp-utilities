@@ -5,7 +5,6 @@ import {
   MAX_REFERENCE_KEY_TERMS,
   MAX_REFERENCE_SUMMARY,
   MISSING_REFERENCES_MESSAGE,
-  isDuplicateReferenceUrl,
   isMissingReferenceTable,
   nameFromUrl,
   normalizeReferenceName,
@@ -14,7 +13,8 @@ import {
   referenceProblem,
 } from "@/lib/references";
 import { deleteReference, listReferences } from "@/lib/referenceStore";
-import { indexReference } from "@/lib/referenceIndex";
+import { start } from "workflow/api";
+import { indexReferencePage } from "./workflow";
 
 /**
  * Reference sources — URLs the index points at but never holds.
@@ -87,24 +87,23 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    await indexReference({ name, url, title, summary, keyTerms });
-    return NextResponse.json({ success: true, name, url, title });
+    // A durable run rather than an inline write, so each step retries on its
+    // own and the page can track it on the same progress card every other
+    // pipeline reports through. The row appears immediately as unindexed; the
+    // run makes it searchable.
+    const run = await start(indexReferencePage, [{ name, url, title, summary, keyTerms }]);
+    return NextResponse.json({
+      success: true,
+      name,
+      url,
+      title,
+      runs: [{ fileName: title, runId: run.runId }],
+    });
   } catch (error) {
     if (isMissingReferenceTable(error)) {
       return NextResponse.json(
         { success: false, error: MISSING_REFERENCES_MESSAGE },
         { status: 503 }
-      );
-    }
-    if (isDuplicateReferenceUrl(error)) {
-      // One page, one entry. Two would split the matches between them, so the
-      // right move is to edit the existing one — say so rather than failing.
-      return NextResponse.json(
-        {
-          success: false,
-          error: `${url} is already referenced under a different name. Remove that entry, or resubmit under the same name to update it.`,
-        },
-        { status: 409 }
       );
     }
     console.error("[indexReference] POST failed:", error);

@@ -81,6 +81,16 @@ export const BACKFILL_STEPS = [
   { name: "stageAndStartIngest", label: "Fetching workbooks, starting ingests" },
 ] as const;
 
+// Registering one reference page — the `indexReferencePage` workflow behind
+// `add_reference` and POST /api/indexReference. Three steps because the
+// embedding is the only call that leaves the deployment, and a failed vector
+// write must not re-pay for it.
+export const REFERENCE_STEPS = [
+  { name: "recordReference", label: "Recording the reference" },
+  { name: "embedReferenceDescriptor", label: "Embedding the description" },
+  { name: "storeReferenceVector", label: "Making it searchable" },
+] as const;
+
 /** One reported step, optionally standing in for alternative journal names. */
 export interface ProgressStep {
   name: string;
@@ -106,6 +116,8 @@ export function stepsForWorkflow(workflowName: string | null): readonly Progress
       return SCHEDULE_STEPS;
     case "backfillSchedules":
       return BACKFILL_STEPS;
+    case "indexReferencePage":
+      return REFERENCE_STEPS;
     default:
       return INGEST_STEPS;
   }

@@ -16,6 +16,7 @@ import {
   FIGURE_STEPS,
   INGEST_STEPS,
   PROCESS_STEPS,
+  REFERENCE_STEPS,
   SCHEDULE_STEPS,
   isTerminalRunStatus,
   type IngestRunProgress,
@@ -133,7 +134,7 @@ type TrackedRun = {
    * recovered from an older sessionStorage entry predate it; those read as
    * ingestion, which is what they were.
    */
-  kind?: "ingest" | "figures" | "processes" | "schedule";
+  kind?: "ingest" | "figures" | "processes" | "schedule" | "reference";
 };
 
 // Run IDs are not persisted server-side, so they survive a reload only as far
@@ -181,10 +182,11 @@ function Stat({ label, value }: { label: string; value: string }) {
  * before the first poll lands. Getting this wrong makes a short run flash the
  * wrong number of segments and then collapse.
  */
-function stepsForKind(kind: "ingest" | "figures" | "processes" | "schedule") {
+function stepsForKind(kind: "ingest" | "figures" | "processes" | "schedule" | "reference") {
   if (kind === "figures") return FIGURE_STEPS;
   if (kind === "processes") return PROCESS_STEPS;
   if (kind === "schedule") return SCHEDULE_STEPS;
+  if (kind === "reference") return REFERENCE_STEPS;
   return INGEST_STEPS;
 }
 
@@ -443,11 +445,13 @@ export default function UploadPage() {
             }
             refreshKnowledgeBase();
             loadIncomplete();
-            // A schedule ingest writes its rows in its last step, so the
-            // numbers only change here. Refreshed unconditionally rather than
-            // per kind — it is one indexed query, and a stale observation
-            // count is exactly the kind of thing nobody notices.
+            // Both only become true at their workflow's last step: a schedule
+            // ingest writes its rows there, and a reference becomes searchable
+            // there. Refreshed unconditionally rather than per kind — each is
+            // one indexed query, and a stale observation count or a stale
+            // "Not indexed" flag is exactly the kind of thing nobody notices.
             loadAer();
+            loadReferences();
             return;
           }
         }
@@ -465,7 +469,7 @@ export default function UploadPage() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [trackedRuns, refreshKnowledgeBase, loadIncomplete, loadAer]);
+  }, [trackedRuns, refreshKnowledgeBase, loadIncomplete, loadAer, loadReferences]);
 
   // Retries a failed ingestion from the Markdown it already persisted. The
   // runtime cannot resume a failed run in place, so the server starts a fresh
@@ -798,8 +802,14 @@ export default function UploadPage() {
       if (!res.ok || !data?.success) {
         throw new Error(data?.error ?? `Could not index the reference (${res.status})`);
       }
-      setReferenceMessage({ text: `Indexed "${data.title}".`, error: false });
+      setReferenceMessage({
+        text: `Queued "${data.title}" — it becomes searchable when indexing finishes.`,
+        error: false,
+      });
       form.reset();
+      // The row exists immediately as unindexed; the run is what makes it
+      // searchable, so it is tracked on the same card as every other pipeline.
+      trackRuns((data.runs ?? []) as TrackedRun[], "reference");
       loadReferences();
     } catch (error) {
       setReferenceMessage({
@@ -2498,7 +2508,7 @@ function IngestProgress({
   onCancel,
 }: {
   fileName: string;
-  kind: "ingest" | "figures" | "processes" | "schedule";
+  kind: "ingest" | "figures" | "processes" | "schedule" | "reference";
   progress: IngestRunProgress | undefined;
   retrying: boolean;
   onRetry: () => void;
@@ -2680,6 +2690,8 @@ function IngestProgress({
               ? "Press Processes on this document to try again — it replaces whatever the failed run stored."
               : kind === "schedule"
                 ? "Ingest the workbook again — a re-ingest replaces that quarter rather than adding to it, so a part-written one is not left behind."
+                : kind === "reference"
+                  ? "The reference is saved but not searchable. Submit it again to re-index it."
                 : "Failed before the Markdown was saved — upload the file again to retry."}
         </p>
       )}
