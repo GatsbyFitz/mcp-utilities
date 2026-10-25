@@ -11,6 +11,8 @@ pnpm verify:multimodal # checks the figure embeddings actually carry their image
 
 There is no test framework in this repo. `pnpm type-check` and `pnpm lint` are the only automated verification available — run both after changes.
 
+Two checks need credentials and skip cleanly without them. `pnpm verify:aer-inference` is the second: it sends the real `inferMappings` prompt and a sheet captured from the live Schedule 2 Q4 2023-24 workbook to a model, then feeds the mapping that comes back to the shipped `extractRows` and reads five values against the spreadsheet cells they came from. `verify:aer` proves the extractor is right *given* a mapping; this is the only check on whether a model returns that mapping — which is where the collapse of five quarter columns into one key would come from. It needs `ANTHROPIC_API_KEY`, and note it infers with Claude while production infers with `EXTRACTION_MODEL` through the gateway, so a pass means the prompt and the pipeline are sound rather than that every model will comply.
+
 `pnpm verify:multimodal` is the one exception: a standalone check that figure embeddings really carry their image. Its first stage stubs `fetch` and asserts what the SDK *would* send, so it runs offline with no credentials and also guards the image-per-request batching in `embedFigures`; the second stage needs `AI_GATEWAY_API_KEY` and skips without it. See [scripts/verify-multimodal-embedding.mjs](../../scripts/verify-multimodal-embedding.mjs).
 
 ## Testing MCP tools locally
