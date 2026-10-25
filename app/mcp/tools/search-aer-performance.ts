@@ -46,7 +46,17 @@ function renderFacets(f: AerFacets): string {
 
   return [
     f.schedules.length ? `Schedules: ${f.schedules.join(", ")}` : null,
-    f.retailers.length ? `Retailers: ${f.retailers.join(", ")}` : null,
+    // Canonical key first, because that is what a filter must use, then the
+    // spellings the workbooks used — `agl_energy` alone tells a caller neither
+    // which company it is nor that "AGL Energy Ltd" is the same series.
+    f.retailers.length
+      ? `Retailers (filter on the key; spellings in brackets): ${f.retailers
+          .map((r) => {
+            const seen = f.retailerLabels.find((l) => l.retailer === r)?.spellings ?? [];
+            return seen.length ? `${r} (${seen.join("; ")})` : r;
+          })
+          .join(", ")}`
+      : null,
     f.jurisdictions.length ? `Jurisdictions: ${f.jurisdictions.join(", ")}` : null,
     f.fuels.length ? `Fuels: ${f.fuels.join(", ")}` : null,
     f.periods.length ? `Periods: ${f.periods.join(", ")}` : null,

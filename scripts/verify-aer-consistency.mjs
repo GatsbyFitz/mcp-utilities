@@ -170,5 +170,28 @@ console.log("A definition that changed under an unchanged name:");
     classifyDefinitions([{ metric: "x", definition: "", sheetName: "s", cellRef: null }], []).length === 0);
 }
 
+console.log("A filter has to be canonicalised the same way the column was:");
+{
+  // The bug that moving the dimensions to canonical keys introduced. The
+  // stored column holds `agl_energy`; a filter of "AGL Energy" compared
+  // against it matches nothing, and "no rows matched" reads exactly like
+  // "that retailer reported nothing". Both sides go through one function or
+  // the query is silently empty.
+  check("a natural retailer name lands on the stored key",
+    canonicalRetailer("AGL Energy") === canonicalRetailer("AGL Energy Ltd"));
+  check("a spelled-out state lands on the stored code",
+    canonicalJurisdiction("New South Wales") === canonicalJurisdiction("NSW"));
+  check("an abbreviated fuel lands on the stored value",
+    canonicalFuel("Elec") === canonicalFuel("electricity"));
+
+  // An unrecognised value must narrow to nothing, not widen to everything:
+  // canonicalJurisdiction returns null for it, and a null filter means "no
+  // filter". The store keeps the raw string in that case so the query matches
+  // no row — a filter nobody can satisfy, rather than a filter ignored.
+  check("an unrecognised jurisdiction canonicalises to null",
+    canonicalJurisdiction("Region 4") === null,
+    "the store must fall back to the raw string, not drop the filter");
+}
+
 console.log(failures === 0 ? "\nAll AER consistency checks passed." : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

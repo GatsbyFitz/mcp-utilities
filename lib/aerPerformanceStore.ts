@@ -1,4 +1,9 @@
 import {
+  canonicalFuel,
+  canonicalJurisdiction,
+  canonicalRetailer,
+} from "@/lib/aerDimensions";
+import {
   MISSING_DEFINITIONS_MESSAGE,
   classifyDefinitions,
   definitionKey,
@@ -104,13 +109,30 @@ function toObservation(row: Row): AerObservationRow {
 export async function queryAer(filters: AerFilters): Promise<AerResult> {
   const {
     schedule = null,
-    retailer = null,
-    jurisdiction = null,
-    fuel = null,
+    retailer: retailerFilter = null,
+    jurisdiction: jurisdictionFilter = null,
+    fuel: fuelFilter = null,
     metric = null,
     from = null,
     to = null,
   } = filters;
+
+  // The stored columns hold canonical keys, so the filters have to be put
+  // through the same functions or they match nothing. This is the bug that
+  // moving the dimensions to canonical keys introduced: `retailer: "AGL
+  // Energy"` compared against a stored `agl_energy` returns zero rows, and
+  // "no rows matched" reads exactly like "that retailer reported nothing" —
+  // the silent-empty failure this file exists to avoid.
+  //
+  // An unrecognised jurisdiction or fuel canonicalises to null, which would
+  // widen the query to everything rather than narrowing it to nothing. That is
+  // the wrong way to fail, so the raw filter is kept in that case and simply
+  // matches no row — a filter nobody can satisfy, not a filter ignored.
+  const retailer = retailerFilter ? canonicalRetailer(retailerFilter) || retailerFilter : null;
+  const jurisdiction = jurisdictionFilter
+    ? canonicalJurisdiction(jurisdictionFilter) ?? jurisdictionFilter
+    : null;
+  const fuel = fuelFilter ? canonicalFuel(fuelFilter) ?? fuelFilter : null;
 
   const rows = (await sql`
     SELECT schedule, period_label, period_start, period_end, retailer, jurisdiction,
@@ -144,7 +166,15 @@ export async function queryAer(filters: AerFilters): Promise<AerResult> {
 
 export interface AerFacets {
   schedules: number[];
+  /** Canonical keys — what a filter must use. */
   retailers: string[];
+  /**
+   * Canonical key to the spellings the workbooks actually used, most recent
+   * first. Without this the facets read as `agl_energy` and a caller has no
+   * way to know which company that is, or that "AGL Energy Ltd" is the same
+   * thing. The metric facets carry their aliases for exactly this reason.
+   */
+  retailerLabels: { retailer: string; spellings: string[] }[];
   jurisdictions: string[];
   fuels: string[];
   /**
@@ -189,10 +219,24 @@ export async function aerFacets(): Promise<AerFacets> {
     SELECT metric, aliases, first_seen FROM aer_metrics ORDER BY metric
   `) as { metric: string; aliases: string[] | null; first_seen: string }[];
 
+  // Most recent spelling first, so the label a caller sees is the one the
+  // latest workbook used.
+  const labelRows = (await sql`
+    SELECT retailer,
+           ARRAY_AGG(DISTINCT retailer_raw) FILTER (WHERE retailer_raw IS NOT NULL) AS spellings
+    FROM aer_performance
+    GROUP BY retailer
+    ORDER BY retailer
+  `) as { retailer: string; spellings: string[] | null }[];
+
   const row = rows[0];
   return {
     schedules: row?.schedules ?? [],
     retailers: row?.retailers ?? [],
+    retailerLabels: labelRows.map((r) => ({
+      retailer: r.retailer,
+      spellings: r.spellings ?? [],
+    })),
     jurisdictions: row?.jurisdictions ?? [],
     fuels: row?.fuels ?? [],
     metrics: metricRows.map((m) => ({
