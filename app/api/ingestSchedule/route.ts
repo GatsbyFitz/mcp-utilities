@@ -10,6 +10,11 @@ import {
 } from "@/lib/fetchDocument";
 import { ingestSchedule } from "./workflow";
 
+// Fetches the workbook from aer.gov.au, which refuses US-region traffic — see
+// the measurement recorded in app/mcp/route.ts. The project default is `iad1`,
+// where this route cannot do its job at all.
+export const preferredRegion = "syd1";
+
 /**
  * POST /api/ingestSchedule — ingest one AER retail performance workbook.
  *

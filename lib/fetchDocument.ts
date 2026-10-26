@@ -149,6 +149,23 @@ async function assertPublicHost(url: URL): Promise<void> {
 }
 
 /**
+ * How long one hop may take before it is abandoned.
+ *
+ * There was no timeout here, and a host that accepts a connection and then
+ * never answers is not hypothetical: `aer.gov.au` does exactly that to a
+ * request from a US region, and the first attempt at an authorised ingest
+ * burned the function's entire 300-second budget before reporting the
+ * uselessly bare `fetch failed`.
+ *
+ * Generous rather than tight, because these are multi-megabyte workbooks on a
+ * slow government host and a real transfer must not be cut off — this is a cap
+ * on *silence*, not on the download. `AbortSignal.timeout` resets per hop,
+ * which is what we want: five redirects each taking a while is fine, one hop
+ * hanging is not.
+ */
+const HOP_TIMEOUT_MS = 60_000;
+
+/**
  * Redirects are followed by hand so each hop can be re-validated. `fetch`'s
  * automatic following would validate only the first URL and then happily
  * chase a 302 into the private network.
@@ -157,7 +174,34 @@ async function fetchFollowingRedirects(startUrl: string): Promise<Response> {
   let url = new URL(startUrl);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     await assertPublicHost(url);
-    const res = await fetch(url, { redirect: "manual" });
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        redirect: "manual",
+        signal: AbortSignal.timeout(HOP_TIMEOUT_MS),
+      });
+    } catch (error) {
+      // Said in words rather than passed through. A bare `fetch failed` with a
+      // `read ETIMEDOUT` cause is what a blocked or silent host produces, and
+      // it is indistinguishable from a wrong URL unless it is named — which
+      // cost a diagnosis the first time it happened.
+      const cause = error instanceof Error && error.cause instanceof Error ? error.cause : null;
+      const code = cause && "code" in cause ? String((cause as { code?: unknown }).code) : null;
+      if (error instanceof Error && error.name === "TimeoutError") {
+        throw new DocumentFetchError(
+          `${url.host} accepted the connection but sent nothing for ` +
+            `${HOP_TIMEOUT_MS / 1000}s. The host is reachable but not answering this ` +
+            `deployment — some sites refuse traffic by region.`
+        );
+      }
+      throw new DocumentFetchError(
+        `Could not connect to ${url.host}` +
+          (code ? ` (${code})` : "") +
+          `. The host may be refusing traffic from this deployment's region.`
+      );
+    }
+
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get("location");
       if (!location) throw new DocumentFetchError(`Redirect with no location from ${url.host}`);
