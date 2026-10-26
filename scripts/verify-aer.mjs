@@ -427,8 +427,11 @@ console.log("The annual block to the right of the quarterly one:");
 {
   console.log("\nscope totals");
 
-  // AGL's national residential electricity count beside its five jurisdiction
-  // blocks: the real shape of one Schedule 2 metric for one retailer.
+  // AGL's national residential electricity count for 2022-23 Q4 beside its
+  // jurisdiction blocks, as stored from the real workbook: 1,518,827 at B8,
+  // and 809,019 + 402,908 + 306,896 + 4 across B101/B159/B217/B79 — the same
+  // figure again, which is why the naive total is 3,037,654 and why it is
+  // exactly twice the truth rather than merely somewhat high.
   const mixed = scopeTotals({
     totalCount: 6,
     nationalCount: 1,

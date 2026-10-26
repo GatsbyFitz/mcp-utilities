@@ -32,19 +32,36 @@
  *
  * `NATIONAL` is here reluctantly, because an aggregate stored as an
  * observation is the failure this file spends most of its length warning
- * about. It earns the exception on a fact: **the jurisdiction blocks do not
- * sum to the national figure.** AGL's national residential electricity count
- * is 1,518,827 while its ACT, NSW, QLD, SA and TAS blocks together come
- * nowhere near it, because the AER does not break out Victoria — Victorian
- * retail reports to the Essential Services Commission instead. So the national
- * row carries customers that exist in no other row, and dropping it would lose
- * data that cannot be recomputed from what is left.
+ * about — and measured against a real workbook it *is* an aggregate wherever
+ * the metric adds up. AGL's national residential electricity count in
+ * 2022-23 Q4 is 1,518,827, and its ACT, NSW, QLD and SA blocks come to
+ * 1,518,827 exactly. Nothing is left over because Victoria is absent from the
+ * whole schedule — Victorian retail reports to the Essential Services
+ * Commission — so "National" here means the AER's own jurisdictions.
  *
- * The cost is that a sum across every jurisdiction double-counts. That is
- * real, and it is handled where sums are computed rather than left to each
+ * (An earlier version of this comment claimed the opposite, that the blocks
+ * came nowhere near the national figure and so carried customers found in no
+ * other row. That was never measured and it is wrong. The conclusion below
+ * survives it, which is why the correction is recorded rather than quietly
+ * swapped: the reasons are different and only one of them is a fact.)
+ *
+ * Two things earn the exception anyway:
+ *
+ *  - **It is not an aggregate for a ratio.** AGL's national residential
+ *    electricity market share is 0.2189 while its four jurisdiction shares sum
+ *    to 1.008. A ratio cannot be recovered from the parts without the weights
+ *    they were taken over, so refusing the national row would destroy every
+ *    national percentage series outright and leave no way to rebuild it.
+ *  - **Some sheets carry a national block and nothing else** — `Lrg Gas
+ *    Cust#s & Mkt Contr` among them. There it is the only row there is.
+ *
+ * So the cost is exact rather than hypothetical: a sum over a match set
+ * holding both scopes returns *precisely* double. `scopeTotals` in
+ * lib/aerPerformance.ts is where that is paid, once, rather than left to each
  * caller to remember — the mistake `isAggregateLabel`'s own comment warns
  * against. The alternative, a null jurisdiction, is what collapsed eight
- * tables into one and stored a South Australian figure as the national one.
+ * tables into one and stored that South Australian 306,896 as the national
+ * figure.
  */
 export const JURISDICTIONS = [
   "NATIONAL",
