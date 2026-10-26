@@ -281,8 +281,21 @@ console.log("The real two-header layout:");
   check("fuel comes from B3", find("AGL", "customer_numbers", "2023-24 Q4")?.fuel === "electricity");
   check("customer segment comes from C3",
     find("AGL", "customer_numbers", "2023-24 Q4")?.customerType === "residential");
-  check("jurisdiction in A4 reads as an aggregate, so null not 'national'",
-    find("AGL", "customer_numbers", "2023-24 Q4")?.jurisdiction === null);
+  // This assertion used to expect null, on the reasoning that "National" is an
+  // aggregate and an aggregate must not be stored. It was wrong, and it was
+  // the bug: a null jurisdiction is what let every block in a 323-row sheet
+  // share one observation key, so the last block written stood for all of
+  // them — AGL's national figure became its South Australian Tier 1 figure.
+  //
+  // And the premise does not hold. The jurisdiction blocks do not sum to the
+  // national row, because the AER does not break out Victoria. So National
+  // carries customers that appear in no other row and is not recomputable.
+  check("jurisdiction in A4 is stored as NATIONAL, not nulled out",
+    find("AGL", "customer_numbers", "2023-24 Q4")?.jurisdiction === "NATIONAL",
+    JSON.stringify(find("AGL", "customer_numbers", "2023-24 Q4")));
+  check("and its raw spelling is kept",
+    find("AGL", "customer_numbers", "2023-24 Q4")?.jurisdictionRaw === "National",
+    JSON.stringify(find("AGL", "customer_numbers", "2023-24 Q4")?.jurisdictionRaw));
   check("and the raw strings are kept",
     find("AGL", "customer_numbers", "2023-24 Q4")?.fuelRaw === "Electricity" &&
       find("AGL", "customer_numbers", "2023-24 Q4")?.customerTypeRaw === "Residential");

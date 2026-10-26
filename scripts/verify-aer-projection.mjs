@@ -123,6 +123,36 @@ if (/retailerRaw:\s*row\.retailer_raw/.test(mapper)) {
   fail("retailerRaw is no longer mapped from retailer_raw", mapper.match(/retailerRaw:[^\n]*/)?.[0]);
 }
 
+// ---------------------------------------------------------------------------
+// No camelCase SQL aliases anywhere in the store
+// ---------------------------------------------------------------------------
+// Postgres folds an unquoted identifier to lower case, so `AS customerTypes`
+// yields a result key of `customertypes`. A mapper reading `row.customerTypes`
+// then gets `undefined`, and a `?? []` turns that into an empty list rather
+// than an error — so the customerTypes facet reported "nothing recorded" for
+// every query ever made, while the rows in the same response carried
+// "residential" and "small_business".
+//
+// This is the same shape as the projection bug above: a query and its mapper
+// disagreeing, with a fallback making the disagreement look like data. Checked
+// the same way, across every query in the file rather than the one that broke.
+console.log("\nSQL aliases Postgres will not give back as written:");
+{
+  const aliases = [...source.matchAll(/\bAS\s+([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]);
+  const camel = aliases.filter((a) => /[a-z]/.test(a) && /[A-Z]/.test(a));
+  if (aliases.length === 0) {
+    fail("found no SQL aliases at all — the parse is wrong, not the code");
+  } else if (camel.length === 0) {
+    pass(`all ${aliases.length} alias(es) survive Postgres case folding`);
+  } else {
+    fail(
+      `${camel.length} camelCase alias(es): ${[...new Set(camel)].join(", ")}`,
+      "Postgres lower-cases these, so the mapper reads undefined and any ?? fallback hides it. " +
+        "Use snake_case, as every other alias in this file does."
+    );
+  }
+}
+
 console.log(
   failed ? "\nSome AER projection checks FAILED." : "\nAll AER projection checks passed."
 );
