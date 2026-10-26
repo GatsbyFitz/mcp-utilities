@@ -69,6 +69,44 @@ export const SPREADSHEET_KIND: DocumentKind = {
       : ALLOWED_SPREADSHEET_CONTENT_TYPES[0],
 };
 
+/** The bare media type, without parameters or case. */
+export function declaredContentType(header: string | null | undefined): string {
+  return (header ?? "").split(";")[0].trim().toLowerCase();
+}
+
+/**
+ * Whether a source's declared content type is one this kind will accept.
+ *
+ * Pure and exported so the rule can be checked offline, which is how the bug
+ * it now encodes was found — by a real fetch failing, not by a test.
+ *
+ * **Compared case-insensitively**, and that is the fix rather than a nicety.
+ * `ALLOWED_SPREADSHEET_CONTENT_TYPES` holds the canonical IANA spelling
+ * `application/vnd.ms-excel.sheet.macroEnabled.12`, with a capital E, which is
+ * what the Blob token route must advertise. The AER's own server sends
+ * `application/vnd.ms-excel.sheet.macroenabled.12`, all lower case. The
+ * incoming header was already being lowercased before an `includes()` against
+ * the mixed-case list, so the two could never match and every `.xlsm` workbook
+ * was refused — while the code carried a comment explaining that `.xlsm` is
+ * supported *because the AER ships it*. RFC 2045 makes media types
+ * case-insensitive, so matching that way is simply correct.
+ */
+export function contentTypeAllowed(
+  kind: DocumentKind,
+  contentType: string,
+  fileName: string
+): boolean {
+  if (kind.contentTypes.some((allowed) => allowed.toLowerCase() === contentType)) return true;
+
+  // Plenty of document servers send octet-stream for a real document. Accept
+  // it only when the name agrees; anything else is refused rather than guessed
+  // at.
+  return (
+    contentType === "application/octet-stream" &&
+    kind.extensions.some((ext) => fileName.toLowerCase().endsWith(ext))
+  );
+}
+
 const MAX_REDIRECTS = 5;
 
 /**
@@ -272,15 +310,8 @@ export async function downloadToBlob(
 ): Promise<UploadedFile> {
   const res = await fetchFollowingRedirects(url);
 
-  const contentType = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-  const expected =
-    kind.contentTypes.includes(contentType) ||
-    // Plenty of document servers send octet-stream for a real document.
-    // Accept it only when the name agrees; anything else is refused rather
-    // than guessed at.
-    (contentType === "application/octet-stream" &&
-      kind.extensions.some((ext) => fileName.toLowerCase().endsWith(ext)));
-  if (!expected) {
+  const contentType = declaredContentType(res.headers.get("content-type"));
+  if (!contentTypeAllowed(kind, contentType, fileName)) {
     throw new DocumentFetchError(
       `Expected ${kind.label} but the source returned "${contentType || "no content type"}"`
     );
