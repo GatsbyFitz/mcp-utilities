@@ -4,23 +4,25 @@ import {
   MAX_REFERENCE_KEY_TERMS,
   MAX_REFERENCE_SUMMARY,
   MISSING_REFERENCES_MESSAGE,
-  isDuplicateReferenceUrl,
   isMissingReferenceTable,
   nameFromUrl,
   normalizeReferenceName,
   referenceNameProblem,
   referenceProblem,
 } from "@/lib/references";
-import { indexReference } from "@/lib/referenceIndex";
+import { start } from "workflow/api";
+import { indexReferencePage } from "@/app/api/indexReference/workflow";
 
 // ---------------------------------------------------------------------------
 // add_reference — the other half of find_reference
 // ---------------------------------------------------------------------------
 // find_reference can only route to pages something has registered, and the
-// thing best placed to register them is whatever just read one. This server
-// cannot: the pages worth referencing render client-side and are not
-// resolvable from its network. The caller has already opened the page, so it
-// can describe it.
+// thing best placed to register them is whatever just read one. Not because
+// this server cannot fetch them — it can, and an earlier comment here claiming
+// otherwise was checked and wrong — but because a descriptor states which
+// *questions* a page answers, and that is a judgement about the asker rather
+// than a property of the page. The caller has already opened it and knows why
+// it wanted to. See .claude/conventions/data-stores.md.
 //
 // The descriptor is written, not scraped, and that is the whole contract: it
 // says what the page *covers*, so it survives the page changing. A summary
@@ -28,9 +30,11 @@ import { indexReference } from "@/lib/referenceIndex";
 // it goes stale silently and routes a question to a page that no longer
 // answers it.
 //
-// Indexed immediately: the row is written, the descriptor embedded and the
-// vector upserted in one call, so a reference is retrievable by find_reference
-// as soon as this returns.
+// Queued, not indexed. The write runs as a durable workflow so each step
+// retries on its own and the upload page can show it moving, which means this
+// returns before the reference is searchable. The tool says so rather than
+// implying otherwise — a model that adds a page and then immediately fails to
+// find it would reasonably conclude the add had failed.
 
 export function registerAddReferenceTool(server: McpServer): void {
   server.registerTool(
@@ -89,43 +93,39 @@ export function registerAddReferenceTool(server: McpServer): void {
         .slice(0, MAX_REFERENCE_KEY_TERMS);
 
       try {
-        await indexReference({
-          name,
-          url: trimmedUrl,
-          title: trimmedTitle,
-          summary: summary.trim().slice(0, MAX_REFERENCE_SUMMARY),
-          keyTerms: terms,
-        });
+        const run = await start(indexReferencePage, [
+          {
+            name,
+            url: trimmedUrl,
+            title: trimmedTitle,
+            summary: summary.trim().slice(0, MAX_REFERENCE_SUMMARY),
+            keyTerms: terms,
+          },
+        ]);
 
         return {
           content: [
             {
               type: "text" as const,
               text:
-                `Added "${trimmedTitle}" as reference "${name}". It is indexed ` +
-                `and find_reference can return it now. The page itself is not ` +
-                `stored — ${trimmedUrl} is read live whenever it is needed.`,
+                `Queued "${trimmedTitle}" as reference "${name}". Indexing runs ` +
+                `in the background and takes a few seconds, so find_reference ` +
+                `may not return it immediately. The page itself is not stored — ` +
+                `${trimmedUrl} is read live whenever it is needed.`,
             },
           ],
-          structuredContent: { name, url: trimmedUrl, title: trimmedTitle, keyTerms: terms, indexed: true },
+          structuredContent: {
+            name,
+            url: trimmedUrl,
+            title: trimmedTitle,
+            keyTerms: terms,
+            runId: run.runId,
+            queued: true,
+          },
         };
       } catch (error) {
         if (isMissingReferenceTable(error)) {
           return { isError: true, content: [{ type: "text" as const, text: MISSING_REFERENCES_MESSAGE }] };
-        }
-        if (isDuplicateReferenceUrl(error)) {
-          // One page, one entry — two would split the matches between them.
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text" as const,
-                text:
-                  `${trimmedUrl} is already referenced under a different name. ` +
-                  `Use find_reference to see the existing entry rather than adding a second.`,
-              },
-            ],
-          };
         }
         const message = error instanceof Error ? error.message : "Unknown error";
         return {

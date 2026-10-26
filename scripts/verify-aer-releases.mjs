@@ -20,6 +20,7 @@ import {
   MAX_BACKFILL_TARGETS,
   discoveryTargets,
   documentPageUrl,
+  documentPageUrls,
   parseLabel,
   quarterLabel,
   quarterLabelsBetween,
@@ -64,6 +65,43 @@ console.log("Labels and page URLs:");
   check("the page URL carries no en-dash",
     !documentPageUrl(2, "2023–24 Q4").includes("–"), documentPageUrl(2, "2023–24 Q4"));
   check("an unparseable label yields no URL", documentPageUrl(2, "whenever") === null);
+
+  // ---------------------------------------------------------------------
+  // The two slug forms
+  // ---------------------------------------------------------------------
+  // The AER renamed the document-page slug between 2020-21 Q3 and 2021-22 Q1,
+  // and the forms are mutually exclusive — no quarter answers on both. Probed
+  // live across every quarter of 2018-19 to 2022-23 for all three schedules:
+  // `q3` covers 2018-19 Q3 to 2020-21 Q3, `quarter-3` covers 2021-22 Q1 on.
+  // These pin the exact strings those probes returned 200 for.
+  check("the old era's page URL uses the short form",
+    documentPageUrls(2, "2020-21 Q1")[0] ===
+      `${AER_ORIGIN}/documents/schedule-2-q1-2020-21-retail-performance-data`,
+    documentPageUrls(2, "2020-21 Q1")[0]);
+  check("and the new era's uses the long form",
+    documentPageUrls(2, "2021-22 Q1")[0] ===
+      `${AER_ORIGIN}/documents/schedule-2-quarter-1-2021-22-retail-performance-data`,
+    documentPageUrls(2, "2021-22 Q1")[0]);
+  check("the last short-form quarter observed is ordered short-first",
+    documentPageUrls(3, "2020-21 Q3")[0].includes("-q3-2020-21-"),
+    documentPageUrls(3, "2020-21 Q3")[0]);
+  check("the first long-form quarter observed is ordered long-first",
+    documentPageUrls(3, "2021-22 Q1")[0].includes("-quarter-1-2021-22-"),
+    documentPageUrls(3, "2021-22 Q1")[0]);
+
+  // Both forms are always offered. The cutoff decides the order, never the
+  // set — a hardcoded cutoff would be a prediction about the next rename, and
+  // being wrong about it is a silent miss rather than a visible error.
+  for (const label of ["2018-19 Q3", "2020-21 Q3", "2021-22 Q1", "2025-26 Q2"]) {
+    const urls = documentPageUrls(2, label);
+    check(`${label} offers both slug forms`, urls.length === 2, JSON.stringify(urls));
+    check(`${label}'s candidates are distinct`,
+      new Set(urls).size === 2, JSON.stringify(urls));
+  }
+  check("an unparseable label offers no candidates",
+    documentPageUrls(2, "whenever").length === 0);
+  check("documentPageUrl is the first candidate",
+    documentPageUrl(2, "2020-21 Q1") === documentPageUrls(2, "2020-21 Q1")[0]);
 }
 
 console.log("Enumerating the range:");
@@ -98,6 +136,14 @@ console.log("Enumerating the range:");
   check("the whole published history is one target per schedule per quarter",
     targets.length === quarterLabelsBetween(EARLIEST_FY_START, 2025).length * SCHEDULES.length,
     `${targets.length} targets`);
+  // One target per pair, carrying both URLs — not two targets. Two would make
+  // a quarter found under the second form report as one hit plus one spurious
+  // "not published", and the skip list is the only thing anyone reads.
+  check("a target carries its candidates rather than being split in two",
+    targets.every((t) => Array.isArray(t.pageUrls) && t.pageUrls.length === 2),
+    JSON.stringify(targets[0]));
+  check("the bound counts targets, so the request ceiling is twice it",
+    targets.flatMap((t) => t.pageUrls).length === targets.length * 2);
   // The backfill hits someone else's server once per target; the bound is there
   // so a mistyped range cannot turn into thousands of requests.
   check("the whole history fits inside the bound",

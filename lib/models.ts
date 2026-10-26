@@ -30,21 +30,79 @@
 export const MARKDOWN_MODEL = process.env.MARKDOWN_MODEL || "anthropic/claude-sonnet-5-5";
 
 /**
- * Everything downstream of the parse: contextualisation, graph, figures,
- * processes. Deliberately still Gemini, for three separate reasons:
+ * One model id per *purpose*, not one for "extraction".
  *
- *  - `contextualizeChunks` sends the whole document as the prefix of every
- *    call and depends on Gemini's *implicit* prefix caching to not pay for it
- *    ~80 times. Anthropic caches too, but only against an explicit
- *    `cache_control` breakpoint — moving this model without adding one turns
- *    the cheapest step in the pipeline into the most expensive.
- *  - `extractFigures` returns normalised boxes in Gemini's own
- *    `[ymin, xmin, ymax, xmax]` convention, and a mis-ordered box still
- *    validates and still produces a plausible PNG (see README). Changing that
- *    model needs its own verification against rendered crops, not a swap.
- *  - They are the volume. The parse is one call; these are hundreds.
+ * These five calls were a single `EXTRACTION_MODEL`, which made moving them a
+ * single decision — and they do not deserve one. They differ by two orders of
+ * magnitude in volume and they fail in unrelated ways, so each names its own
+ * model and each moved, or did not, for its own reason.
+ *
+ * Every `anthropic/…` id here is billed to our Anthropic account through
+ * `anthropicByok`, not to Vercel credits.
  */
-export const EXTRACTION_MODEL = "google/gemini-3.5-flash-lite";
+
+/**
+ * `inferMappings` — once per sheet, ~16 per workbook.
+ *
+ * Sonnet because this is the call that decides whether a regulatory number is
+ * filed under the right quarter. The AER's columns *are* periods, and a model
+ * that reports one header row of metrics collapses five quarters onto one key
+ * and leaves a real number from the wrong three months under a correct-looking
+ * label. `pnpm verify:aer-inference` runs this exact model against a real
+ * sheet and checks five values against the cells they came from; it is the
+ * only thing standing between a weaker model and silently wrong statistics.
+ */
+export const SHEET_MAPPING_MODEL = "anthropic/claude-sonnet-5-5";
+
+/**
+ * `extractProcesses` — once per figure, vision plus Mermaid generation.
+ *
+ * Sonnet because transcribing a flowchart into valid Mermaid is the hardest
+ * thing asked of a model here, and invalid Mermaid fails *silently*: an empty
+ * iframe with nothing saying why. There is one repair round and then the
+ * diagram is stored flagged invalid, so a weaker model costs diagrams rather
+ * than erroring.
+ */
+export const PROCESS_MODEL = "anthropic/claude-sonnet-5-5";
+
+/**
+ * `extractGraph` — once per chunk, ~80 per document.
+ *
+ * Haiku: entity and relation extraction from a single chunk is a short,
+ * bounded task at high volume, which is the tier Haiku exists for. The chunk
+ * is the whole input, so there is no shared prefix to cache and nothing to
+ * gain from a larger model.
+ */
+export const GRAPH_MODEL = "anthropic/claude-haiku-5-5";
+
+/**
+ * `contextualizeChunks` — once per chunk, ~80 per document, and the largest
+ * input in the pipeline by a wide margin.
+ *
+ * Haiku, and it only works at all with explicit caching. Every call sends the
+ * *whole document* and varies only the trailing chunk, so the step's input is
+ * roughly the document times the chunk count. Gemini absorbed that with
+ * implicit prefix caching; Anthropic caches only against an explicit
+ * `cache_control` breakpoint, which is why moving this one needed a code
+ * change rather than a new string — see the breakpoint in
+ * `contextualizeChunks.ts`. Moved without it, this becomes the most expensive
+ * step in the pipeline instead of the cheapest.
+ */
+export const CONTEXT_MODEL = "anthropic/claude-haiku-5-5";
+
+/**
+ * `extractFigures` — once per page, vision, returning a bounding box.
+ *
+ * **Deliberately still Gemini**, and the only one that did not move. It
+ * returns normalised boxes in Gemini's own `[ymin, xmin, ymax, xmax]`
+ * convention, and a box read in the wrong order still falls in range, still
+ * passes validation and still produces a plausible-looking PNG — a tall slice
+ * down the left of the page with the diagram cut off. There is no error to
+ * catch, so changing this model means rendering crops and looking at them,
+ * not swapping a string. Until someone does that, the convention the prompt
+ * and `lib/figures.ts` were written against is the one in use.
+ */
+export const FIGURE_BOX_MODEL = "google/gemini-3.5-flash-lite";
 
 /**
  * Reranking, on the query side. Shared by `search_docs` and `find_reference`
@@ -54,6 +112,10 @@ export const EXTRACTION_MODEL = "google/gemini-3.5-flash-lite";
  * hybrid index's own score is reciprocal-rank fusion, which measures *rank*,
  * not relevance, and so cannot tell a good match from a bad one. The
  * reranker's score can, which is what makes a relevance floor possible at all.
+ *
+ * Cohere, not Anthropic, and not by choice: Anthropic publishes no reranker.
+ * The same is true of `EMBEDDING_MODEL` in lib/embedding.ts — no embedding
+ * model — so those two calls stay where they are whatever the billing says.
  */
 export const RERANK_MODEL = "cohere/rerank-v3.5";
 

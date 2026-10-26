@@ -30,21 +30,57 @@ export const AER_ORIGIN = "https://www.aer.gov.au";
 /**
  * The page for one schedule in one quarter.
  *
- * This pattern is the regular one and the reason discovery is tractable:
- * `schedule-2-quarter-4-2023-24-...`, `schedule-4-quarter-1-2021-22-...`,
- * `schedule-4-quarter-1-2024-25-...` all hold. The *release* pages do not —
- * Q1 2025–26 is `...-update-quarter-1-2025-26` while Q2 is
- * `...-update-october-december-2025-quarter-2-2025-26` — so this walks the
- * document pages and never the releases.
+ * Document pages, never release pages — and that is not a preference. The
+ * release pages (`/publications/reports/performance/...`) sit behind Akamai
+ * Bot Manager: every one of them answers **200** with the same 2,489-byte
+ * `bm-verify` interstitial, including URLs that cannot exist. Probing
+ * `...-update-quarter-9-2019-20` returns exactly what a real quarter returns,
+ * so a discovery walk over them would report every quarter as found and then
+ * report every one as having no workbook link — thirty-six invented parser
+ * bugs. The `/documents/` path is not gated: a real page is ~72 KB and a
+ * missing one is a real 404, which is the only reason any of this is
+ * decidable.
+ *
+ * There are **two slug forms**, and they are mutually exclusive — no quarter
+ * answers on both. The AER renamed the pattern between 2020-21 Q3 and
+ * 2021-22 Q1:
+ *
+ *   `schedule-2-q3-2020-21-retail-performance-data`       2018-19 Q3 → 2020-21 Q3
+ *   `schedule-2-quarter-1-2021-22-retail-performance-data` 2021-22 Q1 → present
+ *
+ * `documentPageUrls` returns both, likeliest first for the era, rather than
+ * switching on a hardcoded cutoff year. A cutoff would be a prediction about
+ * the next rename, and the cost of being wrong is a silent miss; trying the
+ * other form costs one extra 404 on a page that was going to be fetched
+ * anyway. Ordering keeps the common case at one request.
  *
  * Hyphens, not en-dashes: the page URL uses `2023-24` even where the file name
  * inside it uses `2023–24`.
  */
-export function documentPageUrl(schedule: Schedule, label: string): string | null {
+export function documentPageUrls(schedule: Schedule, label: string): string[] {
   const parsed = parseLabel(label);
-  if (!parsed) return null;
+  if (!parsed) return [];
   const { fy, quarter } = parsed;
-  return `${AER_ORIGIN}/documents/schedule-${schedule}-quarter-${quarter}-${fy}-retail-performance-data`;
+  const slug = (q: string) =>
+    `${AER_ORIGIN}/documents/schedule-${schedule}-${q}-${fy}-retail-performance-data`;
+
+  const long = slug(`quarter-${quarter}`);
+  const short = slug(`q${quarter}`);
+
+  // The era boundary decides the *order*, not the set. `2021` reads off the
+  // financial year's first half, which is what the slug carries.
+  const fyStart = Number(fy.slice(0, 4));
+  return fyStart >= 2021 ? [long, short] : [short, long];
+}
+
+/**
+ * The likeliest page for one schedule and quarter.
+ *
+ * Kept for callers that want one URL to name — an error message, a label on a
+ * skip. Discovery uses `documentPageUrls` and tries both.
+ */
+export function documentPageUrl(schedule: Schedule, label: string): string | null {
+  return documentPageUrls(schedule, label)[0] ?? null;
 }
 
 /** `2023-24 Q4` → `{ fy: "2023-24", quarter: 4 }`, or null. */
@@ -216,16 +252,31 @@ export function workbookFromPage(
   return { workbook: { schedule, periodLabel, sourceUrl, pageUrl } };
 }
 
-/** Every (schedule, quarter) pair to try, in a stable order. */
+/** One (schedule, quarter) to look for, and every URL it might live at. */
+export interface DiscoveryTarget {
+  schedule: Schedule;
+  periodLabel: string;
+  /** Candidate page URLs, likeliest first. Tried in order; first hit wins. */
+  pageUrls: string[];
+}
+
+/**
+ * Every (schedule, quarter) pair to try, in a stable order.
+ *
+ * One target per pair rather than per URL, so a quarter that answers on the
+ * second slug form is one outcome and not one hit plus one spurious
+ * "not published" — which is the whole reason the two forms are a list inside
+ * a target instead of two targets.
+ */
 export function discoveryTargets(
   labels: string[],
   schedules: readonly Schedule[] = SCHEDULES
-): { schedule: Schedule; periodLabel: string; pageUrl: string }[] {
-  const targets: { schedule: Schedule; periodLabel: string; pageUrl: string }[] = [];
+): DiscoveryTarget[] {
+  const targets: DiscoveryTarget[] = [];
   for (const periodLabel of labels) {
     for (const schedule of schedules) {
-      const pageUrl = documentPageUrl(schedule, periodLabel);
-      if (pageUrl) targets.push({ schedule, periodLabel, pageUrl });
+      const pageUrls = documentPageUrls(schedule, periodLabel);
+      if (pageUrls.length > 0) targets.push({ schedule, periodLabel, pageUrls });
     }
   }
   return targets;
@@ -235,8 +286,22 @@ export function discoveryTargets(
  * A backfill is a lot of requests at someone else's expense, so it is bounded.
  * Ninety-odd document pages plus the workbooks themselves is already the whole
  * published history; anything much larger is a mistake in the range.
+ *
+ * Counted in (schedule, quarter) targets, not requests: a target may try two
+ * slug forms, so the request ceiling is twice this in the worst case.
  */
 export const MAX_BACKFILL_TARGETS = 200;
 
-/** The first financial year the AER published these schedules for. */
+/**
+ * The first financial year the AER published these schedules for.
+ *
+ * 2018 is right, but the year does not start at Q1: probing every quarter of
+ * every schedule found nothing for 2018-19 Q1 or Q2 on either slug form, and
+ * the series begins at **2018-19 Q3**. Two other holes are real rather than
+ * pattern failures, and are worth knowing before someone goes looking for a
+ * bug: **2019-20 Q1 has no Schedule 4** (Schedules 2 and 3 are both there),
+ * and **2020-21 Q4 is absent for all three schedules on both forms** — it
+ * falls exactly on the rename, which is suggestive but not something this code
+ * can work around. Each reports as `not-published`, which is what it is.
+ */
 export const EARLIEST_FY_START = 2018;

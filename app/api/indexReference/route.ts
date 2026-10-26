@@ -5,7 +5,6 @@ import {
   MAX_REFERENCE_KEY_TERMS,
   MAX_REFERENCE_SUMMARY,
   MISSING_REFERENCES_MESSAGE,
-  isDuplicateReferenceUrl,
   isMissingReferenceTable,
   nameFromUrl,
   normalizeReferenceName,
@@ -14,7 +13,8 @@ import {
   referenceProblem,
 } from "@/lib/references";
 import { deleteReference, listReferences } from "@/lib/referenceStore";
-import { indexReference } from "@/lib/referenceIndex";
+import { start } from "workflow/api";
+import { indexReferencePage } from "./workflow";
 
 /**
  * Reference sources — URLs the index points at but never holds.
@@ -23,11 +23,13 @@ import { indexReference } from "@/lib/referenceIndex";
  * server does the rest. The difference is that no bytes are transferred and
  * nothing is fetched — the descriptor is supplied, not scraped.
  *
- * That is deliberate rather than lazy. This server often cannot reach the
- * pages worth referencing: AEMO's developer portal renders client-side and is
- * not resolvable from every network, so a descriptor built by fetching would
- * describe an empty shell while looking perfectly indexed. Whoever submits the
- * URL has already read the page; they are the better source.
+ * That is deliberate rather than lazy, though not for the reason this comment
+ * used to give: AEMO's portal is reachable and server-rendered, which was
+ * checked. The real reason is that a descriptor states which *questions* a
+ * page answers, and no amount of fetching produces that — the page says what
+ * it does, while routing needs to know what someone would come looking for.
+ * Whoever submits the URL has already read it and knows why they wanted it.
+ * See .claude/conventions/data-stores.md.
  */
 
 export async function GET(req: NextRequest) {
@@ -87,24 +89,23 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    await indexReference({ name, url, title, summary, keyTerms });
-    return NextResponse.json({ success: true, name, url, title });
+    // A durable run rather than an inline write, so each step retries on its
+    // own and the page can track it on the same progress card every other
+    // pipeline reports through. The row appears immediately as unindexed; the
+    // run makes it searchable.
+    const run = await start(indexReferencePage, [{ name, url, title, summary, keyTerms }]);
+    return NextResponse.json({
+      success: true,
+      name,
+      url,
+      title,
+      runs: [{ fileName: title, runId: run.runId }],
+    });
   } catch (error) {
     if (isMissingReferenceTable(error)) {
       return NextResponse.json(
         { success: false, error: MISSING_REFERENCES_MESSAGE },
         { status: 503 }
-      );
-    }
-    if (isDuplicateReferenceUrl(error)) {
-      // One page, one entry. Two would split the matches between them, so the
-      // right move is to edit the existing one — say so rather than failing.
-      return NextResponse.json(
-        {
-          success: false,
-          error: `${url} is already referenced under a different name. Remove that entry, or resubmit under the same name to update it.`,
-        },
-        { status: 409 }
       );
     }
     console.error("[indexReference] POST failed:", error);

@@ -1,5 +1,5 @@
 import { FatalError } from "workflow";
-import { EXTRACTION_MODEL } from "@/lib/models";
+import { FIGURE_BOX_MODEL } from "@/lib/models";
 import { generateText, Output } from "ai";
 import * as z from "zod/v4";
 import { v4 as uuidv4 } from "uuid";
@@ -147,7 +147,7 @@ export async function extractFigures(
       const pagePng = Buffer.from(full.asPNG());
 
       const { output } = await generateText({
-        model: EXTRACTION_MODEL,
+        model: FIGURE_BOX_MODEL,
         output: Output.object({ schema: FigureSchema }),
         messages: [
           {

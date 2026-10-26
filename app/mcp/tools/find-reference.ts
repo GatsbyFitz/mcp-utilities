@@ -31,11 +31,12 @@ import { listReferences } from "@/lib/referenceStore";
 // a *descriptor* of what each page covers, which ages far more slowly, and the
 // page is read live by whoever asked.
 //
-// It also puts the fetching where it works. This server frequently cannot
-// reach the pages worth referencing — they render client-side, or are not
-// resolvable from its network — while the client asking the question usually
-// can. The server knows what exists and which of it is relevant; the client
-// knows how to read a page. Neither can do the other's half.
+// It also puts the fetching where the freshest copy is. The server knows what
+// exists and which of it is relevant; the client knows how to read a page and
+// is reading it now. Neither can do the other's half. (An earlier comment here
+// said this server could not reach these pages at all. That was checked and is
+// wrong — see .claude/conventions/data-stores.md — but it changes nothing: the
+// point is that an indexed copy goes stale and a live read cannot.)
 
 function renderMatch(match: ReferenceMatch, n: number): string {
   const terms = match.keyTerms.length ? `\nCovers: ${match.keyTerms.join(", ")}` : "";

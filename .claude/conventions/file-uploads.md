@@ -42,6 +42,26 @@ instead would let a workbook through the token route and then fail it deep
 inside `createMarkdown`, with an error about Markdown rather than about the
 file being a spreadsheet.
 
+## A third way in: `submit_schedule`, and the one credential on `/mcp`
+
+`submit_schedule` is an MCP tool that takes an AER workbook URL, a schedule number and a period label. It is the only tool on the public `/mcp` endpoint that will fetch a supplied URL from inside the deployment and start a run, which is exactly what `request_document` refuses to do — that tool stores a URL as a suggestion precisely so an unauthenticated caller cannot use this server as a proxy into its own network.
+
+What makes the difference is `MCP_INGEST_SECRET` ([lib/ingestSecret.ts](../../lib/ingestSecret.ts)), and it has three outcomes rather than two:
+
+| Secret | What happens |
+| --- | --- |
+| none offered | a pending row in `schedule_requests`. Nothing fetched. The `request_document` contract. |
+| offered and accepted | `downloadToBlob` + `start(ingestSchedule, …)`, same as an operator using the page. |
+| offered and refused | nothing ingested **and nothing queued** |
+
+That third row is the one worth keeping. A wrong secret quietly becoming a queued request would have the caller report the quarter as loaded, with a row in a review queue as the only evidence against it — so a rejected credential says so and writes nothing.
+
+**It is not `APP_PASSWORD`.** An MCP tool argument travels through model context, client transcripts and whatever host relays the call; a credential that also grants the whole signed-in UI does not belong in that path. A scoped secret limits what a leak costs to "someone can queue an AER workbook" and can be rotated without locking anyone out.
+
+**Unset means refuse.** With no secret configured, every value is rejected and only the queue path works. That is the opposite of how `anthropicByok` degrades a few files away, deliberately: a missing *billing* credential is not a reason to stop ingesting a document, and a missing *authorisation* credential is not a reason to start one. `pnpm verify:ingest-secret` pins it.
+
+The queue is resolved by `POST /api/scheduleRequests`, which is where a queued URL is finally fetched — the same shape as `documentRequests`, and the same reason: approval by a signed-in human is the event that makes a model-supplied URL safe to fetch. The operator can correct the schedule and period on approval, because those two fields are the workbook's identity and a quarter stored under the wrong label is wrong in a way no later query can detect.
+
 ## Fetching by URL is the same fetcher
 
 A document the server fetches itself — an approved `request_document`, or an
