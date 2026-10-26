@@ -1,4 +1,5 @@
 import {
+  NATIONAL,
   canonicalCustomerType,
   canonicalFuel,
   canonicalJurisdiction,
@@ -16,6 +17,7 @@ import {
 import { sql } from "@/lib/db";
 import {
   MAX_AER_ROWS,
+  scopeTotals,
   type AerMetric,
   type AerObservationRow,
   type Schedule,
@@ -45,8 +47,17 @@ export interface AerResult {
   rows: AerObservationRow[];
   /** Over the whole matching set, not just the returned page. */
   totalCount: number;
-  /** Summed over every matching row. Meaningful only within one metric. */
-  totalValue: number;
+  /**
+   * Summed over every matching row, and null where no single sum is
+   * meaningful. Meaningful only within one metric, which the caller enforces,
+   * and only within one jurisdiction scope, which `scopeTotals` enforces here.
+   */
+  totalValue: number | null;
+  /** The national rows alone, and the rest alone. See `scopeTotals`. */
+  nationalValue: number | null;
+  subNationalValue: number | null;
+  /** True when the match set holds both, so `totalValue` is null. */
+  scopesMixed: boolean;
   truncated: boolean;
   latestPeriod: string | null;
 }
@@ -73,6 +84,9 @@ interface Row {
   cell_ref: string;
   total_count: string | number;
   total_value: string | number | null;
+  national_count: string | number;
+  national_value: string | number | null;
+  sub_national_value: string | number | null;
   latest_period: string | null;
 }
 
@@ -160,6 +174,14 @@ export async function queryAer(filters: AerFilters): Promise<AerResult> {
            metric, metric_raw, value, source_file, sheet_name, cell_ref,
            COUNT(*)    OVER () AS total_count,
            SUM(value)  OVER () AS total_value,
+           -- Split by jurisdiction scope in the same pass, because the
+           -- national figure is one the AER reports and not a sum of the
+           -- others, so a match set holding both sums to roughly double.
+           -- scopeTotals decides what to do with these; see its comment.
+           COUNT(*)   FILTER (WHERE jurisdiction = ${NATIONAL}::text) OVER () AS national_count,
+           SUM(value) FILTER (WHERE jurisdiction = ${NATIONAL}::text) OVER () AS national_value,
+           SUM(value) FILTER (WHERE jurisdiction IS DISTINCT FROM ${NATIONAL}::text)
+             OVER () AS sub_national_value,
            MAX(period_label) OVER () AS latest_period
     FROM aer_performance
     WHERE (${schedule}::smallint IS NULL OR schedule = ${schedule}::smallint)
@@ -175,12 +197,19 @@ export async function queryAer(filters: AerFilters): Promise<AerResult> {
   `) as Row[];
 
   const totalCount = rows[0] ? Number(rows[0].total_count) : 0;
+  // SUM over no rows is null rather than 0, which scopeTotals folds.
+  const num = (v: string | number | null | undefined) => (v != null ? Number(v) : null);
 
   return {
     rows: rows.map(toObservation),
     totalCount,
-    // SUM over no rows is null rather than 0.
-    totalValue: rows[0]?.total_value != null ? Number(rows[0].total_value) : 0,
+    ...scopeTotals({
+      totalCount,
+      nationalCount: rows[0] ? Number(rows[0].national_count) : 0,
+      totalValue: num(rows[0]?.total_value),
+      nationalValue: num(rows[0]?.national_value),
+      subNationalValue: num(rows[0]?.sub_national_value),
+    }),
     truncated: totalCount > rows.length,
     latestPeriod: rows[0]?.latest_period ?? null,
   };

@@ -53,6 +53,26 @@ The measure is on row 4 and each column is a different **quarter**, named on row
 
 Fuel, customer segment and jurisdiction are stated in cells *above* the table (`B3`, `C3`, `A4`), not in columns, so `sheetDimensions` takes cell references and a column wins over a sheet-level cell where a sheet does both. Customer segment is a dimension the table did not have: without it the Residential, Small Business and Large sheets share a key and overwrite each other.
 
+**And the rows are several tables.** This is the other half of the same mistake and it cost more. A 323-row Schedule 2 sheet is eight stacked tables, divided by a row that holds a label in the retailer column and no value in any mapped column:
+
+```
+rows 6-75    every retailer, National          <- what A4 names, and all it names
+row  76      "Jurisdictions"                   <- a divider, not a jurisdiction
+rows 77-276  the same retailers x ACT, NSW, QLD, SA, TAS
+row  277     "Tier 1 Retailers"                <- a scope change
+rows 278-323 National and those five again, for a subset
+```
+
+Read as one flat table, every block lands on the same `(schedule, period_label, retailer, metric, jurisdiction, fuel, customer_type)` key and `aer_performance_observation_idx` keeps whichever was written last. AGL's national residential electricity count was stored as **306,896** — the figure from `B313`, in the South Australian block of the Tier 1 section — against **1,518,827** in `B8`. Wrong by 80%, low, with a correct-looking label and a cell reference attached, and nothing downstream able to tell.
+
+So `extractRows` attributes every row to the block it sits in, classifying each header through `blockLabelKind`: a jurisdiction sets it for the rows below, a divider deliberately changes nothing (the next header sets one immediately), a **scope** change drops the rest of the sheet because "a subset of retailers" is a dimension this schema does not have, and an unrecognised header *clears* the current jurisdiction rather than letting rows inherit one they do not belong to — a gap is visible where a wrong attribution is not. The sheet-level cell is only the seed for the first block.
+
+**`NATIONAL` is therefore a jurisdiction here, not an aggregate to refuse.** That reverses the earlier reasoning, and the earlier reasoning is what caused the collision: a null jurisdiction is what let eight blocks share a key. The premise was also wrong on a fact — the jurisdiction blocks do not sum to National, because the AER does not break out Victoria (Victorian retail reports to the Essential Services Commission), so the national row carries customers that appear in no other row and cannot be recomputed from what is left.
+
+The cost is real and lands in one place: a sum over a match set holding both scopes double-counts. `scopeTotals` in [lib/aerPerformance.ts](../../lib/aerPerformance.ts) is where that is handled — `queryAer` splits the same window pass by scope and reports **no single total** when both are present, giving both halves and the reason instead. Note the direction: every other failure described here reads low and shows as a gap, while this one reads high and shows as nothing at all. It is pure, so `pnpm verify:aer` pins it without a database.
+
+The block structure is recorded from real workbooks in [scripts/fixtures/aer-sheet-blocks.json](../../scripts/fixtures/aer-sheet-blocks.json) and asserted by `pnpm verify:aer-blocks`. That fixture exists because the previous one stopped at row 30 and column 40: it passed every assertion while hiding both the jurisdiction blocks (first header at row 76) and the annual columns (which start past column 40). **A fixture that is smaller than the shape it stands for proves the parser handles the fixture.**
+
 `period_label` is therefore what a number **measures** and `release_label` is which publication stated it. They differ because consecutive releases overlap by four quarters and a later one restates the earlier ones — `replaceScheduleRows` deletes every period a workbook carried rather than just the release's own, so ingest order decides the overlap and the release label makes that auditable. One consequence worth knowing: five quarters per workbook means the full history needs roughly four releases per schedule, not eighteen.
 
 **The model infers the mapping; it never emits a value.** The layout drifts between quarters, so `inferMappings` shows a model the top of each sheet and asks which column is the retailer, which is the jurisdiction, and which hold measurements — a *mapping*, in column letters. `extractAndStore` then reads the cells that mapping names. The numbers come out of the spreadsheet. A transcribed number can be wrong in a way nothing downstream detects, and a fabricated disconnection count served through a tool that reports exact totals is the worst failure available here. A wrong *mapping*, by contrast, is wrong consistently and a spot check catches it.

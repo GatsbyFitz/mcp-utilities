@@ -172,6 +172,59 @@ export function normalizePeriodLabel(raw: string): string | null {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Totals that do not double-count
+// ---------------------------------------------------------------------------
+// `NATIONAL` is a jurisdiction the AER reports against, not a sum of the
+// others — see the comment on `JURISDICTIONS` in lib/aerDimensions.ts. The
+// consequence lands here: a match set holding both the national figure and the
+// per-jurisdiction figures sums to roughly double, because the national row
+// covers customers the jurisdiction rows do not (Victorian retail reports to
+// the Essential Services Commission, so there is no VIC block to add).
+//
+// That is the worst shape of error available to this tool. A split series
+// reads low and shows up as a gap; this reads high and shows up as nothing at
+// all, carrying the exactness the tool advertises in its own description.
+//
+// So there is no single total in that case. Both halves are reported instead,
+// which loses no information and makes the reason visible, rather than a
+// number that is quietly wrong or a number quietly withheld.
+//
+// Pure, and separate from the query that counts the rows, so the decision is
+// checkable by `pnpm verify:aer` with no database.
+
+export interface ScopeTotals {
+  /** The one meaningful total, or null when there is not one. */
+  totalValue: number | null;
+  /** The matched national rows alone. Null when none matched. */
+  nationalValue: number | null;
+  /** The matched per-jurisdiction rows alone. Null when none matched. */
+  subNationalValue: number | null;
+  /** True when both halves matched, which is when `totalValue` is null. */
+  scopesMixed: boolean;
+}
+
+export function scopeTotals(counts: {
+  totalCount: number;
+  nationalCount: number;
+  totalValue: number | null;
+  nationalValue: number | null;
+  subNationalValue: number | null;
+}): ScopeTotals {
+  const { totalCount, nationalCount } = counts;
+  const hasNational = nationalCount > 0;
+  const hasSubNational = nationalCount < totalCount;
+  const scopesMixed = hasNational && hasSubNational;
+  return {
+    // Zero rather than null on an empty match set: no rows is a total of
+    // nothing, which is a different statement from "a total would mislead".
+    totalValue: scopesMixed ? null : counts.totalValue ?? 0,
+    nationalValue: hasNational ? counts.nationalValue ?? 0 : null,
+    subNationalValue: hasSubNational ? counts.subNationalValue ?? 0 : null,
+    scopesMixed,
+  };
+}
+
 /** Observations stored per ingest. A guard, not a real limit. */
 export const MAX_OBSERVATIONS_PER_INGEST = 200_000;
 /** Rows a query returns. Counts and totals are computed over the full set. */

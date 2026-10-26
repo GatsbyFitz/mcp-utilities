@@ -17,7 +17,12 @@ import {
   mappingProblems,
   numericValue,
 } from "@/lib/sheetMapping";
-import { canonicalMetric, isAnnualPeriodLabel, periodBounds } from "@/lib/aerPerformance";
+import {
+  canonicalMetric,
+  isAnnualPeriodLabel,
+  periodBounds,
+  scopeTotals,
+} from "@/lib/aerPerformance";
 import { PDF_KIND, SPREADSHEET_KIND, fileNameFromUrl } from "@/lib/fetchDocument";
 import { ALLOWED_SPREADSHEET_CONTENT_TYPES, ALLOWED_UPLOAD_CONTENT_TYPES } from "@/lib/upload";
 
@@ -408,6 +413,72 @@ console.log("The annual block to the right of the quarterly one:");
   check("an unreadable period still fails the sheet",
     mappingProblems(brokenSheet, broken).some((x) => /not a quarter/.test(x)),
     JSON.stringify(mappingProblems(brokenSheet, broken)));
+}
+
+// ---------------------------------------------------------------------------
+// A total that would double-count is not given
+// ---------------------------------------------------------------------------
+// The cost of keeping National as a jurisdiction rather than a null. The sum
+// the tool advertises is exact, and a match set holding the national figure
+// beside the per-jurisdiction ones sums to roughly double — high, plausible,
+// and invisible, which is the one direction of error that nothing downstream
+// can catch. Asserted here rather than against the database, because the
+// decision is pure and the database is the part that cannot be checked in CI.
+{
+  console.log("\nscope totals");
+
+  // AGL's national residential electricity count beside its five jurisdiction
+  // blocks: the real shape of one Schedule 2 metric for one retailer.
+  const mixed = scopeTotals({
+    totalCount: 6,
+    nationalCount: 1,
+    totalValue: 3_037_654,
+    nationalValue: 1_518_827,
+    subNationalValue: 1_518_827,
+  });
+  check("a match set mixing National with jurisdictions gives no single total",
+    mixed.totalValue === null, JSON.stringify(mixed));
+  check("and reports both halves rather than withholding the numbers",
+    mixed.nationalValue === 1_518_827 && mixed.subNationalValue === 1_518_827,
+    JSON.stringify(mixed));
+  check("the doubled figure is nowhere in the result",
+    !Object.values(mixed).includes(3_037_654), JSON.stringify(mixed));
+  check("and the mix is flagged, not left to be inferred from a null",
+    mixed.scopesMixed === true, JSON.stringify(mixed));
+
+  const nationalOnly = scopeTotals({
+    totalCount: 1,
+    nationalCount: 1,
+    totalValue: 1_518_827,
+    nationalValue: 1_518_827,
+    subNationalValue: null,
+  });
+  check("National on its own does total",
+    nationalOnly.totalValue === 1_518_827 && nationalOnly.scopesMixed === false,
+    JSON.stringify(nationalOnly));
+  check("and does not claim a jurisdiction figure it has no rows for",
+    nationalOnly.subNationalValue === null, JSON.stringify(nationalOnly));
+
+  const statesOnly = scopeTotals({
+    totalCount: 5,
+    nationalCount: 0,
+    totalValue: 1_518_827,
+    nationalValue: null,
+    subNationalValue: 1_518_827,
+  });
+  check("jurisdictions on their own do total",
+    statesOnly.totalValue === 1_518_827 && statesOnly.scopesMixed === false,
+    JSON.stringify(statesOnly));
+  check("and do not claim a national figure they have no rows for",
+    statesOnly.nationalValue === null, JSON.stringify(statesOnly));
+
+  // "Nothing matched" must stay distinguishable from "a total would mislead":
+  // one is zero, the other is null, and the tool renders them differently.
+  const empty = scopeTotals({
+    totalCount: 0, nationalCount: 0, totalValue: null, nationalValue: null, subNationalValue: null,
+  });
+  check("an empty match set totals zero rather than null",
+    empty.totalValue === 0 && empty.scopesMixed === false, JSON.stringify(empty));
 }
 
 console.log(failures === 0 ? "\nAll AER parsing checks passed." : `\n${failures} check(s) failed.`);

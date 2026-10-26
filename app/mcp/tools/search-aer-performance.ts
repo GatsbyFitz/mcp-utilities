@@ -86,7 +86,12 @@ export function registerSearchAerPerformanceTool(server: McpServer): void {
         "with the other headings each has been published under, so if a " +
         "filter returns nothing, retry with a key from that list rather than " +
         "concluding the data does not exist. Totals are only meaningful " +
-        "within a single metric. For enforcement actions and penalties use " +
+        "within a single metric, and within one jurisdiction scope: the AER " +
+        "reports a National figure alongside the per-jurisdiction ones and " +
+        "it is not their sum, so a total over both is a double count and is " +
+        "reported as two figures rather than one. Filter `jurisdiction` " +
+        "(\"National\", or a state) when you want a single total. For " +
+        "enforcement actions and penalties use " +
         "search_compliance; for what the rules require use search_docs.",
       inputSchema: z.object({
         schedule: z.number().int().optional(),
@@ -126,18 +131,40 @@ export function registerSearchAerPerformanceTool(server: McpServer): void {
                   `actually recorded:\n\n${renderFacets(facets)}${asOf}`,
               },
             ],
-            structuredContent: { rows: [], totalCount: 0, totalValue: 0, facets },
+            structuredContent: {
+              rows: [],
+              totalCount: 0,
+              totalValue: 0,
+              nationalValue: null,
+              subNationalValue: null,
+              scopesMixed: false,
+              facets,
+            },
           };
         }
 
         const capped = result.truncated
           ? `\nShowing ${result.rows.length} of ${result.totalCount}; the count and total above cover all of them.`
           : "";
-        // Only meaningful within one metric — summing customers and
-        // disconnections together is arithmetic on unlike things.
-        const total = metric
-          ? `, totalling ${formatValue(result.totalValue)}`
-          : " (no total shown: a total across different metrics would be meaningless)";
+        // Two separate reasons a single total would be a wrong number rather
+        // than a useful one. Both are said out loud, because this tool
+        // advertises exact totals and a caller has no way to notice either.
+        //
+        // Across metrics it is arithmetic on unlike things — customers plus
+        // disconnections. Across jurisdiction scopes it is a double count: the
+        // AER reports a National figure *and* per-jurisdiction figures, and
+        // the National one is not their sum, since Victorian retail reports to
+        // the Essential Services Commission and has no block here. Adding them
+        // gives roughly double. Both halves are given instead of one wrong
+        // number, so nothing is lost and the reason is visible.
+        const total = !metric
+          ? " (no total shown: a total across different metrics would be meaningless)"
+          : result.scopesMixed
+            ? ` (no single total: these rows mix the National figure with per-jurisdiction ` +
+              `figures, and National is not their sum, so adding them would double-count. ` +
+              `National alone: ${formatValue(result.nationalValue ?? 0)}. Jurisdictions alone: ` +
+              `${formatValue(result.subNationalValue ?? 0)}. Filter by jurisdiction for one total.)`
+            : `, totalling ${formatValue(result.totalValue ?? 0)}`;
 
         return {
           content: [
@@ -153,6 +180,9 @@ export function registerSearchAerPerformanceTool(server: McpServer): void {
             rows: result.rows,
             totalCount: result.totalCount,
             totalValue: metric ? result.totalValue : null,
+            nationalValue: metric ? result.nationalValue : null,
+            subNationalValue: metric ? result.subNationalValue : null,
+            scopesMixed: result.scopesMixed,
             truncated: result.truncated,
             facets,
           },
