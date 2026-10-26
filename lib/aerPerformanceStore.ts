@@ -227,8 +227,13 @@ export async function aerFacets(): Promise<AerFacets> {
              WHERE jurisdiction IS NOT NULL ORDER BY jurisdiction) AS jurisdictions,
       ARRAY(SELECT DISTINCT fuel FROM aer_performance
              WHERE fuel IS NOT NULL ORDER BY fuel) AS fuels,
+      -- snake_case, like every other alias here. Postgres folds an unquoted
+      -- identifier to lower case, so a camelCase alias produced a result key
+      -- of customertypes while the mapper read row.customerTypes -- the facet
+      -- reported an empty list for every query ever made, including ones whose
+      -- own rows carried residential and small_business.
       ARRAY(SELECT DISTINCT customer_type FROM aer_performance
-             WHERE customer_type IS NOT NULL ORDER BY customer_type) AS customerTypes,
+             WHERE customer_type IS NOT NULL ORDER BY customer_type) AS customer_types,
       ARRAY(SELECT DISTINCT period_label FROM aer_performance ORDER BY period_label DESC) AS periods,
       (SELECT MAX(period_label) FROM aer_performance) AS latest_period
   `) as {
@@ -236,7 +241,7 @@ export async function aerFacets(): Promise<AerFacets> {
     retailers: string[] | null;
     jurisdictions: string[] | null;
     fuels: string[] | null;
-    customerTypes: string[] | null;
+    customer_types: string[] | null;
     periods: string[] | null;
     latest_period: string | null;
   }[];
@@ -265,7 +270,7 @@ export async function aerFacets(): Promise<AerFacets> {
     })),
     jurisdictions: row?.jurisdictions ?? [],
     fuels: row?.fuels ?? [],
-    customerTypes: row?.customerTypes ?? [],
+    customerTypes: row?.customer_types ?? [],
     metrics: metricRows.map((m) => ({
       metric: m.metric,
       aliases: m.aliases ?? [],
