@@ -11,6 +11,7 @@
 // splitting a series in two.
 //
 // Run: pnpm verify:aer
+import { readFileSync } from "node:fs";
 import { canonicalRetailer } from "@/lib/aerDimensions";
 import {
   extractRows,
@@ -20,6 +21,8 @@ import {
 import {
   canonicalMetric,
   isAnnualPeriodLabel,
+  observationCollisions,
+  observationKey,
   periodBounds,
   scopeTotals,
 } from "@/lib/aerPerformance";
@@ -413,6 +416,151 @@ console.log("The annual block to the right of the quarterly one:");
   check("an unreadable period still fails the sheet",
     mappingProblems(brokenSheet, broken).some((x) => /not a quarter/.test(x)),
     JSON.stringify(mappingProblems(brokenSheet, broken)));
+}
+
+// ---------------------------------------------------------------------------
+// A count and a percentage are two metrics
+// ---------------------------------------------------------------------------
+// Found by reconciling an ingest's own numbers: 57,786 observations extracted
+// from Schedule 2, 45,876 stored. The missing 11,910 were columns that wrote
+// an observation key another column had already written, so the uniqueness
+// index kept the later one — the same class of silent overwrite as the stacked
+// blocks, one layer down.
+//
+// The cause was `canonicalMetric` stripping `%` with the rest of the
+// punctuation, which made a count column and its percentage column one key on
+// the "Types of contracts" sheet. Twelve metrics lost one of each pair, and
+// what survived was the ratio: AGL's national residential deemed-contract
+// figure read 0.0033 where a customer count belonged.
+{
+  console.log("\na count and a percentage are two metrics");
+
+  check("a percentage header does not collapse onto its count",
+    canonicalMetric("Electricity Residential Contracts % Deemed") !==
+      canonicalMetric("Electricity Residential Contracts Deemed"),
+    canonicalMetric("Electricity Residential Contracts % Deemed"));
+  check("and says which one it is rather than dropping the unit",
+    canonicalMetric("Electricity Residential Contracts % Deemed")
+      .includes("pct"),
+    canonicalMetric("Electricity Residential Contracts % Deemed"));
+  check("a trailing % is kept too",
+    canonicalMetric("Customers on market contracts %") !==
+      canonicalMetric("Customers on market contracts"),
+    canonicalMetric("Customers on market contracts %"));
+  check("a header with no % keeps the key it always had",
+    canonicalMetric("Customer numbers") === "customer_numbers",
+    canonicalMetric("Customer numbers"));
+
+  // The structural guard, which would have caught the above whatever caused
+  // it. A single-period sheet with two columns claiming one metric.
+  const cells = {
+    A4: "National",
+    B4: "Contracts Deemed", C4: "Contracts Deemed",
+    A5: "AGL", B5: 5066, C5: 0.0033,
+  };
+  const sheet = sheetOf("Types of contracts", cells, 5);
+  const collide = {
+    metricRow: 4,
+    periodRow: 0,
+    dimensions: { retailer: "A" },
+    sheetDimensions: {},
+    metrics: [
+      { column: "B", raw: "Contracts Deemed", metric: "contracts_deemed" },
+      { column: "C", raw: "Contracts % Deemed", metric: "contracts_deemed" },
+    ],
+  };
+  const problems = mappingProblems(sheet, collide);
+  check("two columns claiming one metric is refused, not written half-read",
+    problems.some((x) => /both map to metric/.test(x)), JSON.stringify(problems));
+  check("and the message names both columns so the mapping can be fixed",
+    problems.some((x) => /columns B and C/.test(x)), JSON.stringify(problems));
+
+  // The same metric in several columns is the *normal* shape when the columns
+  // are quarters, so the guard must key on the period as well. Getting this
+  // wrong would refuse every main sheet in the workbook.
+  const quarterly = {
+    ...collide,
+    periodRow: 5,
+    metrics: [
+      { column: "B", raw: "Contracts Deemed", metric: "contracts_deemed" },
+      { column: "C", raw: "Contracts Deemed", metric: "contracts_deemed" },
+    ],
+  };
+  const quarterlySheet = sheetOf("Types of contracts", {
+    A4: "National", B4: "Contracts Deemed", C4: "Contracts Deemed",
+    A5: "Retailer", B5: "Q3 2023-24", C5: "Q4 2023-24",
+    A6: "AGL", B6: 5066, C6: 5100,
+  }, 6);
+  check("the same metric in two different quarters is not a collision",
+    !mappingProblems(quarterlySheet, quarterly).some((x) => /both map to metric/.test(x)),
+    JSON.stringify(mappingProblems(quarterlySheet, quarterly)));
+}
+
+// ---------------------------------------------------------------------------
+// The run says what did not survive
+// ---------------------------------------------------------------------------
+// `replaceScheduleRows` inserts ON CONFLICT DO UPDATE, so a collision looks
+// exactly like an insert from the statement's point of view. It reported
+// `rows.length` as "written", a number that cannot be wrong in the direction
+// that matters because it never looks — and a real ingest said 57,786 written
+// against 45,876 rows in the table. The gap was found by reading two numbers
+// side by side and noticing, which is not a mechanism. This is the mechanism.
+{
+  console.log("\nwhat did not survive");
+
+  const row = (over) => ({
+    schedule: 2, periodLabel: "2023-24 Q4", retailer: "agl",
+    metric: "customer_numbers", jurisdiction: "NATIONAL", fuel: "electricity",
+    customerType: "residential", sheetName: "Res Elec", cellRef: "F8", ...over,
+  });
+
+  const clean = observationCollisions([
+    row(), row({ jurisdiction: "NSW", cellRef: "F101" }),
+    row({ metric: "market_share", cellRef: "K8" }),
+    row({ periodLabel: "2023-24 Q3", cellRef: "E8" }),
+  ]);
+  check("rows that differ in any key component do not collide",
+    clean.distinct === 4 && clean.overwritten === 0, JSON.stringify(clean));
+
+  // The real case: one sheet's count column and percentage column landing on
+  // one key, which is what the % fix above stops at the source.
+  const collided = observationCollisions([
+    row({ cellRef: "H9" }), row({ cellRef: "I9" }), row({ cellRef: "J9" }),
+  ]);
+  check("rows sharing a key are counted, not silently absorbed",
+    collided.overwritten === 2, JSON.stringify(collided));
+  check("and only one of them is reported as written",
+    collided.distinct === 1, JSON.stringify(collided));
+  check("the example names the cell that overwrites and the one it overwrites",
+    collided.examples[0]?.includes("I9") && collided.examples[0]?.includes("H9"),
+    JSON.stringify(collided.examples));
+
+  // A nullable dimension must behave the way COALESCE(…, '') does, or the
+  // count reports collisions that will not happen and misses ones that will.
+  check("a null dimension keys as the empty string, as the index COALESCEs it",
+    observationKey(row({ fuel: null })) === observationKey(row({ fuel: "" })),
+    observationKey(row({ fuel: null })));
+  check("and is still distinct from a real value",
+    observationKey(row({ fuel: null })) !== observationKey(row()));
+
+  // The key is a copy of a database index, so it is checked against the
+  // index's own source rather than against my memory of it. If someone adds a
+  // dimension to the index, the reconciliation has to learn about it or it
+  // silently goes back to counting attempts.
+  const ddl = readFileSync(new URL("../db/aer_performance.sql", import.meta.url), "utf8");
+  const idx = ddl.match(/aer_performance_observation_idx\s*\n?\s*ON aer_performance \(([\s\S]*?)\);/);
+  check("the uniqueness index is still findable in the DDL", Boolean(idx));
+  if (idx) {
+    const components = idx[1]
+      .replace(/COALESCE\(([a-z_]+),\s*''\)/g, "$1")
+      .split(",").map((s) => s.trim()).filter(Boolean);
+    const expected = ["schedule", "period_label", "retailer", "metric",
+      "jurisdiction", "fuel", "customer_type"];
+    check("and names exactly the components observationKey builds from",
+      components.length === expected.length &&
+        components.every((c, i) => c === expected[i]),
+      JSON.stringify(components));
+  }
 }
 
 // ---------------------------------------------------------------------------

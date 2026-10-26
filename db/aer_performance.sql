@@ -68,11 +68,12 @@ CREATE TABLE IF NOT EXISTS aer_performance (
   sheet_name   TEXT        NOT NULL,
   -- e.g. "E42". The cell this number was read out of.
   cell_ref     TEXT        NOT NULL,
-  ingested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  -- The mapping the model inferred for this sheet, stored verbatim. When a
-  -- number looks wrong months later the question is "what did we think this
-  -- column meant", and it should be answerable without re-running inference.
-  mapping      JSONB
+  ingested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  -- The mapping that produced the row lives in `aer_sheet_mappings`, joined on
+  -- (source_file, sheet_name), which are both above. It was a JSONB column
+  -- here and that was a mistake: a mapping belongs to a sheet, not to each of
+  -- its thousands of observations, and storing it per row filled the database.
+  -- See db/aer_sheet_mappings.sql, which also drops this column.
 );
 
 -- One observation per dimension combination.

@@ -26,6 +26,7 @@ import {
   knownMetrics,
   recordDefinitions,
   recordMetrics,
+  recordSheetMappings,
   replaceScheduleRows,
 } from "@/lib/aerPerformanceStore";
 
@@ -367,6 +368,8 @@ export async function extractAndStore(
 ): Promise<{
   written: number;
   removed: number;
+  /** Observations read but not stored, because another took their key. */
+  overwritten: number;
   newMetrics: string[];
   skipped: string[];
   definitionsCaptured: number;
@@ -466,12 +469,16 @@ export async function extractAndStore(
   // one period while inserting five would leave the other four to accumulate
   // whatever an earlier release had put there.
   const periodsWritten = [...new Set(observations.map((o) => o.periodLabel))].sort();
-  const { written, removed } = await replaceScheduleRows(
+  const { written, removed, overwritten, collisions } = await replaceScheduleRows(
     schedule,
     periodsWritten,
-    observations,
-    mappings
+    observations
   );
+
+  // Once per sheet, not once per observation. The previous shape put the whole
+  // workbook's mappings on every row and filled the database; see
+  // db/aer_sheet_mappings.sql.
+  const mappingsRecorded = await recordSheetMappings(schedule, sourceFile, mappings);
 
   console.log(
     `[parseSchedule] ${sourceFile}: ${written} observation(s) across ${mappings.length - skipped.length} sheet(s)` +
@@ -480,9 +487,31 @@ export async function extractAndStore(
       `, periods ${periodsWritten.join("/") || "none"}`
   );
 
+  // Named rather than silent, because a missing table here is invisible from
+  // the data: the numbers all land and only the provenance is absent.
+  if (mappingsRecorded.missingTable) {
+    console.warn(
+      `[parseSchedule] ${sourceFile}: column mappings not recorded — ` +
+        "run db/aer_sheet_mappings.sql against the database"
+    );
+  }
+
+  // Said separately and loudly, because it is the one number here that means
+  // data did not survive. A mapping can send two columns to one observation
+  // key, and Postgres resolves that by keeping the later one — so this is the
+  // difference between what was read and what exists.
+  if (overwritten > 0) {
+    console.warn(
+      `[parseSchedule] ${sourceFile}: ${overwritten} observation(s) overwrote another and are NOT ` +
+        `stored — two columns or two sheets map to one observation key. ` +
+        `First few: ${collisions.join("; ")}`
+    );
+  }
+
   return {
     written,
     removed,
+    overwritten,
     newMetrics,
     skipped,
     periods: periodsWritten,

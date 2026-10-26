@@ -17,6 +17,7 @@ import {
 import { sql } from "@/lib/db";
 import {
   MAX_AER_ROWS,
+  observationCollisions,
   scopeTotals,
   type AerMetric,
   type AerObservationRow,
@@ -389,10 +390,23 @@ export async function recordMetrics(
 export async function replaceScheduleRows(
   schedule: Schedule,
   periodLabels: string[],
-  rows: AerObservationRow[],
-  mapping: unknown
-): Promise<{ written: number; removed: number }> {
-  if (periodLabels.length === 0) return { written: 0, removed: 0 };
+  rows: AerObservationRow[]
+): Promise<{
+  written: number;
+  removed: number;
+  /** Rows that overwrote another, and a few of them named. Should be zero. */
+  overwritten: number;
+  collisions: string[];
+}> {
+  if (periodLabels.length === 0) {
+    return { written: 0, removed: 0, overwritten: 0, collisions: [] };
+  }
+
+  // Counted before the insert, not inferred from it. `ON CONFLICT DO UPDATE`
+  // makes a collision indistinguishable from an insert at the statement
+  // level, so `rows.length` was reported as "written" and overstated a real
+  // Schedule 2 ingest by 11,910. See observationCollisions.
+  const collided = observationCollisions(rows);
 
   const removed = (await sql`
     DELETE FROM aer_performance
@@ -406,15 +420,14 @@ export async function replaceScheduleRows(
         schedule, period_label, period_start, period_end, release_label,
         retailer, retailer_raw, jurisdiction, jurisdiction_raw, fuel, fuel_raw,
         customer_type, customer_type_raw, metric, metric_raw, value,
-        source_file, sheet_name, cell_ref, mapping
+        source_file, sheet_name, cell_ref
       ) VALUES (
         ${row.schedule}, ${row.periodLabel}, ${row.periodStart}::date, ${row.periodEnd}::date,
         ${row.releaseLabel},
         ${row.retailer}, ${row.retailerRaw}, ${row.jurisdiction}, ${row.jurisdictionRaw},
         ${row.fuel}, ${row.fuelRaw}, ${row.customerType}, ${row.customerTypeRaw},
         ${row.metric}, ${row.metricRaw},
-        ${row.value}, ${row.sourceFile}, ${row.sheetName}, ${row.cellRef},
-        ${JSON.stringify(mapping)}::jsonb
+        ${row.value}, ${row.sourceFile}, ${row.sheetName}, ${row.cellRef}
       )
       ON CONFLICT (schedule, period_label, retailer, metric,
                    COALESCE(jurisdiction, ''), COALESCE(fuel, ''),
@@ -430,12 +443,68 @@ export async function replaceScheduleRows(
         source_file = EXCLUDED.source_file,
         sheet_name  = EXCLUDED.sheet_name,
         cell_ref    = EXCLUDED.cell_ref,
-        mapping     = EXCLUDED.mapping,
         ingested_at = NOW()
     `;
   }
 
-  return { written: rows.length, removed: removed.length };
+  return {
+    // What will actually be there, which is what a caller means by "written".
+    written: collided.distinct,
+    removed: removed.length,
+    overwritten: collided.overwritten,
+    collisions: collided.examples,
+  };
+}
+
+/**
+ * Record what each sheet's columns were taken to mean.
+ *
+ * One row per sheet, which is the granularity a mapping actually has. This
+ * used to be a `mapping` column on every observation, carrying the *whole
+ * workbook's* mappings rather than the sheet's own — so each of 45,876 rows
+ * held all fourteen, which filled the 1 GB Neon project and failed the next
+ * ingest outright. See db/aer_sheet_mappings.sql.
+ *
+ * No join column is needed: `source_file` and `sheet_name` are already on
+ * every observation.
+ *
+ * Degrades rather than aborting when the table has not been created. A
+ * workbook's numbers are the point of the ingest and provenance about them is
+ * not worth discarding them for — the same call `lib/references.ts` and the
+ * rest of this file make for a table that is not provisioned yet.
+ */
+export async function recordSheetMappings(
+  schedule: Schedule,
+  sourceFile: string,
+  mappings: { sheetName: string; mapping: unknown }[]
+): Promise<{ recorded: number; missingTable: boolean }> {
+  if (mappings.length === 0) return { recorded: 0, missingTable: false };
+
+  try {
+    for (const entry of mappings) {
+      await sql`
+        INSERT INTO aer_sheet_mappings (source_file, sheet_name, schedule, mapping)
+        VALUES (${sourceFile}, ${entry.sheetName}, ${schedule},
+                ${JSON.stringify(entry.mapping)}::jsonb)
+        ON CONFLICT (source_file, sheet_name) DO UPDATE SET
+          mapping     = EXCLUDED.mapping,
+          schedule    = EXCLUDED.schedule,
+          captured_at = NOW()
+      `;
+    }
+    return { recorded: mappings.length, missingTable: false };
+  } catch (error) {
+    if (isMissingSheetMappingsTable(error)) {
+      return { recorded: 0, missingTable: true };
+    }
+    throw error;
+  }
+}
+
+/** The Postgres error raised when aer_sheet_mappings has never been created. */
+export function isMissingSheetMappingsTable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /relation .*aer_sheet_mappings.* does not exist/i.test(message);
 }
 
 /**

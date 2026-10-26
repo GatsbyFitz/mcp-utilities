@@ -288,6 +288,42 @@ export function mappingProblems(sheet: SheetLike, mapping: SheetMapping): string
     }
   }
 
+  // Two mapped columns that would write the same observation key collide on
+  // `aer_performance_observation_idx`, and the later silently replaces the
+  // earlier — columns vanish with no error raised and no gap left to notice.
+  //
+  // Not hypothetical: `canonicalMetric` stripped `%` with the rest of the
+  // punctuation, so a count column and its percentage column shared a key on
+  // the "Types of contracts" sheet and twelve metrics lost one of each pair.
+  // That is fixed at the source, and this is the guard that would have caught
+  // it — and catches the next one, whatever produces it.
+  //
+  // The key includes the period, so on a quarters-as-columns sheet the same
+  // metric across five columns is the normal shape and only a repeat *within*
+  // one quarter is a collision. Annual columns are left out because
+  // `extractRows` drops them before anything is written.
+  const claimed = new Map<string, string>();
+  for (const entry of mapping.metrics) {
+    if (!entry.metric || !COLUMN.test(entry.column ?? "")) continue;
+    let period = "";
+    if (mapping.periodRow > 0) {
+      const cell = text(sheet.cell(mapping.periodRow, entry.column));
+      if (!cell || isAnnualPeriodLabel(cell)) continue;
+      period = normalizePeriodLabel(cell) ?? "";
+    }
+    const key = `${entry.metric}@${period}`;
+    const prior = claimed.get(key);
+    if (prior) {
+      problems.push(
+        `columns ${prior} and ${entry.column} both map to metric ${JSON.stringify(entry.metric)}` +
+          (period ? ` for ${period}` : "") +
+          " — one would silently overwrite the other"
+      );
+    } else {
+      claimed.set(key, entry.column);
+    }
+  }
+
   return problems;
 }
 
