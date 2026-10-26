@@ -69,6 +69,44 @@ export const SPREADSHEET_KIND: DocumentKind = {
       : ALLOWED_SPREADSHEET_CONTENT_TYPES[0],
 };
 
+/** The bare media type, without parameters or case. */
+export function declaredContentType(header: string | null | undefined): string {
+  return (header ?? "").split(";")[0].trim().toLowerCase();
+}
+
+/**
+ * Whether a source's declared content type is one this kind will accept.
+ *
+ * Pure and exported so the rule can be checked offline, which is how the bug
+ * it now encodes was found — by a real fetch failing, not by a test.
+ *
+ * **Compared case-insensitively**, and that is the fix rather than a nicety.
+ * `ALLOWED_SPREADSHEET_CONTENT_TYPES` holds the canonical IANA spelling
+ * `application/vnd.ms-excel.sheet.macroEnabled.12`, with a capital E, which is
+ * what the Blob token route must advertise. The AER's own server sends
+ * `application/vnd.ms-excel.sheet.macroenabled.12`, all lower case. The
+ * incoming header was already being lowercased before an `includes()` against
+ * the mixed-case list, so the two could never match and every `.xlsm` workbook
+ * was refused — while the code carried a comment explaining that `.xlsm` is
+ * supported *because the AER ships it*. RFC 2045 makes media types
+ * case-insensitive, so matching that way is simply correct.
+ */
+export function contentTypeAllowed(
+  kind: DocumentKind,
+  contentType: string,
+  fileName: string
+): boolean {
+  if (kind.contentTypes.some((allowed) => allowed.toLowerCase() === contentType)) return true;
+
+  // Plenty of document servers send octet-stream for a real document. Accept
+  // it only when the name agrees; anything else is refused rather than guessed
+  // at.
+  return (
+    contentType === "application/octet-stream" &&
+    kind.extensions.some((ext) => fileName.toLowerCase().endsWith(ext))
+  );
+}
+
 const MAX_REDIRECTS = 5;
 
 /**
@@ -149,6 +187,23 @@ async function assertPublicHost(url: URL): Promise<void> {
 }
 
 /**
+ * How long one hop may take before it is abandoned.
+ *
+ * There was no timeout here, and a host that accepts a connection and then
+ * never answers is not hypothetical: `aer.gov.au` does exactly that to a
+ * request from a US region, and the first attempt at an authorised ingest
+ * burned the function's entire 300-second budget before reporting the
+ * uselessly bare `fetch failed`.
+ *
+ * Generous rather than tight, because these are multi-megabyte workbooks on a
+ * slow government host and a real transfer must not be cut off — this is a cap
+ * on *silence*, not on the download. `AbortSignal.timeout` resets per hop,
+ * which is what we want: five redirects each taking a while is fine, one hop
+ * hanging is not.
+ */
+const HOP_TIMEOUT_MS = 60_000;
+
+/**
  * Redirects are followed by hand so each hop can be re-validated. `fetch`'s
  * automatic following would validate only the first URL and then happily
  * chase a 302 into the private network.
@@ -157,7 +212,34 @@ async function fetchFollowingRedirects(startUrl: string): Promise<Response> {
   let url = new URL(startUrl);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     await assertPublicHost(url);
-    const res = await fetch(url, { redirect: "manual" });
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        redirect: "manual",
+        signal: AbortSignal.timeout(HOP_TIMEOUT_MS),
+      });
+    } catch (error) {
+      // Said in words rather than passed through. A bare `fetch failed` with a
+      // `read ETIMEDOUT` cause is what a blocked or silent host produces, and
+      // it is indistinguishable from a wrong URL unless it is named — which
+      // cost a diagnosis the first time it happened.
+      const cause = error instanceof Error && error.cause instanceof Error ? error.cause : null;
+      const code = cause && "code" in cause ? String((cause as { code?: unknown }).code) : null;
+      if (error instanceof Error && error.name === "TimeoutError") {
+        throw new DocumentFetchError(
+          `${url.host} accepted the connection but sent nothing for ` +
+            `${HOP_TIMEOUT_MS / 1000}s. The host is reachable but not answering this ` +
+            `deployment — some sites refuse traffic by region.`
+        );
+      }
+      throw new DocumentFetchError(
+        `Could not connect to ${url.host}` +
+          (code ? ` (${code})` : "") +
+          `. The host may be refusing traffic from this deployment's region.`
+      );
+    }
+
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get("location");
       if (!location) throw new DocumentFetchError(`Redirect with no location from ${url.host}`);
@@ -228,15 +310,8 @@ export async function downloadToBlob(
 ): Promise<UploadedFile> {
   const res = await fetchFollowingRedirects(url);
 
-  const contentType = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-  const expected =
-    kind.contentTypes.includes(contentType) ||
-    // Plenty of document servers send octet-stream for a real document.
-    // Accept it only when the name agrees; anything else is refused rather
-    // than guessed at.
-    (contentType === "application/octet-stream" &&
-      kind.extensions.some((ext) => fileName.toLowerCase().endsWith(ext)));
-  if (!expected) {
+  const contentType = declaredContentType(res.headers.get("content-type"));
+  if (!contentTypeAllowed(kind, contentType, fileName)) {
     throw new DocumentFetchError(
       `Expected ${kind.label} but the source returned "${contentType || "no content type"}"`
     );

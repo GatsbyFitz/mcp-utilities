@@ -20,7 +20,8 @@
     "verify:aer-consistency": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-aer-consistency.mjs",
     "verify:aer-inference": "node --env-file-if-exists=.env.local --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-aer-inference.mjs",
     "verify:context-caching": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-context-caching.mjs",
-    "verify:ingest-secret": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-ingest-secret.mjs"
+    "verify:ingest-secret": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-ingest-secret.mjs",
+    "verify:document-kinds": "node --experimental-strip-types --import ./scripts/register-alias.mjs scripts/verify-document-kinds.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.10",
