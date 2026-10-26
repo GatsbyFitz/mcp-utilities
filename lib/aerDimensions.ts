@@ -124,8 +124,34 @@ export function isAggregateLabel(raw: string): boolean {
   if (!flat) return true;
   if (AGGREGATE_LABELS.has(flat)) return true;
   // "Total - electricity", "Total electricity", "Total, all retailers".
-  if (/^(grand\s+)?(total|subtotal|sub-total)\b/.test(flat)) return true;
+  //
+  // The leading word must be followed by *nothing*, by punctuation, or by a
+  // dimension word — not by just any word. Unqualified, this matched
+  // "Total Energies", a live energy brand, and refused it as an aggregate.
+  // Narrowing it is not a softening: a label beginning "Total" and continuing
+  // into a company name was never a subtotal.
+  if (
+    /^(grand\s+)?(total|subtotal|sub-total)\b(\s*$|\s*[-–—,:;(/]|\s+(all|electricity|elec|gas|dual|residential|small|large|business|retailers?|jurisdictions?|states?|fuels?|customers?|national|nem)\b)/.test(
+      flat
+    )
+  ) {
+    return true;
+  }
   if (/^all\s+(retailers?|jurisdictions?|states?|fuels?)\b/.test(flat)) return true;
+  // "ACT Total", "NSW Total", "National Total" — the word at the *end*.
+  //
+  // This is how the AER actually writes a jurisdiction subtotal, and the
+  // leading-anchor patterns above all missed it: the first real ingest stored
+  // "ACT Total" as a retailer with 198,786 residential contracts, to be summed
+  // alongside the ACT retailers composing it. Exactly the double that reads
+  // high and shows up as nothing.
+  //
+  // Trailing-only, deliberately. A leading match would also catch a real
+  // company — "Total Energies" is a live brand — and refusing a genuine
+  // retailer is the cheaper mistake only because it is *visible*: a refused
+  // row leaves a gap, a stored total silently inflates every figure the tool
+  // reports. Where that trade has to be made, make it toward refusing.
+  if (/\b(sub)?totals?$/.test(flat)) return true;
   return false;
 }
 

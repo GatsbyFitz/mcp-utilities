@@ -8,6 +8,7 @@ import {
   type SheetMapping,
 } from "@/lib/sheetMapping";
 import { SHEET_MAPPING_MODEL, anthropicByok } from "@/lib/models";
+import { mapPool } from "@/lib/pool";
 import {
   MAX_DEFINITION_CHARS,
   definitionProblem,
@@ -44,6 +45,16 @@ import {
 // database write must not re-pay for either.
 
 /** Rows of each sheet shown to the model. Enough for a header and some data. */
+/**
+ * Sheets inferred at once.
+ *
+ * Five rather than all of them, and not one at a time: a workbook carries up
+ * to 29 sheets and the step that infers them has 300 seconds, so serial calls
+ * do not fit. Five is the same width `contextualizeChunks` and `extractGraph`
+ * fan out to.
+ */
+const INFERENCE_CONCURRENCY = 5;
+
 const PREVIEW_ROWS = 30;
 /** Columns scanned. AER schedules are wide but not this wide. */
 const PREVIEW_COLUMNS = 40;
@@ -232,11 +243,29 @@ export async function inferMappings(
   "use step";
 
   const known = (await knownMetrics(schedule)).map((m) => ({ metric: m.metric, aliases: m.aliases }));
-  const mappings: { sheetName: string; mapping: SheetMapping }[] = [];
-  const definitions: CapturedDefinition[] = [];
 
-  for (const preview of previews) {
-    if (!preview.text.trim()) continue;
+  // ---------------------------------------------------------------------
+  // One call per sheet, fanned out — not a sequential loop
+  // ---------------------------------------------------------------------
+  // This used to await each sheet in turn, inside one step, and a workbook has
+  // more sheets than that can survive: Schedule 2 Q4 2023-24 has **16**, and
+  // Schedule 3 has **29**. A serverless function is capped at 300 seconds, so
+  // sixteen serial model calls at twenty seconds each is already over the line
+  // and twenty-nine is hopeless — the step would time out, retry, and time out
+  // again, having re-paid for every sheet it had already inferred.
+  //
+  // Concurrency instead, the same `mapPool` the other fan-out steps use. Five
+  // at a time keeps a workbook inside one function's budget while staying well
+  // under any provider rate limit, and because `mapPool` returns results in
+  // input order the mappings and definitions still come out in sheet order —
+  // which matters, since `extractAndStore` reports skipped sheets by name and
+  // a shuffled report is a harder thing to read.
+  const perSheet = await mapPool(previews, INFERENCE_CONCURRENCY, async (preview) => {
+    const empty = {
+      mapping: null as { sheetName: string; mapping: SheetMapping } | null,
+      definitions: [] as CapturedDefinition[],
+    };
+    if (!preview.text.trim()) return empty;
 
     try {
       const { output } = await generateText({
@@ -249,11 +278,12 @@ export async function inferMappings(
       // Definitions first, and outside the isData gate. The sheet that states
       // them is the one this prompt classifies as *not* data, so collecting
       // them after the gate would discard every one.
+      const found: CapturedDefinition[] = [];
       for (const entry of output.definitions.slice(0, 400)) {
         const term = entry.term.trim();
         const definition = entry.definition.trim().slice(0, MAX_DEFINITION_CHARS);
         if (!term || definitionProblem(definition)) continue;
-        definitions.push({
+        found.push({
           // Matched to a canonical metric deterministically, not by the model:
           // the term is normalised the same way a header is, so a definition
           // lands on the metric its wording implies or on nothing at all.
@@ -264,9 +294,11 @@ export async function inferMappings(
         });
       }
 
-      if (!output.isData || output.metrics.length === 0) continue;
+      if (!output.isData || output.metrics.length === 0) {
+        return { mapping: null, definitions: found };
+      }
 
-      mappings.push({
+      const mapping = {
         sheetName: preview.name,
         mapping: {
           metricRow: output.metricRow,
@@ -291,13 +323,22 @@ export async function inferMappings(
           })),
           notes: output.notes || undefined,
         },
-      });
+      };
+      return { mapping, definitions: found };
     } catch (error) {
       // One unreadable sheet must not discard a workbook whose other sheets
       // parsed, so this degrades rather than aborting — the workflow-steps rule.
+      // `mapPool` awaits every runner, so an unhandled throw here would sink
+      // the whole workbook rather than one sheet.
       console.warn(`[parseSchedule] sheet "${preview.name}": inference failed, skipping —`, error);
+      return empty;
     }
-  }
+  });
+
+  const mappings = perSheet
+    .map((r) => r.mapping)
+    .filter((m): m is { sheetName: string; mapping: SheetMapping } => m !== null);
+  const definitions = perSheet.flatMap((r) => r.definitions);
 
   console.log(
     `[parseSchedule] ${mappings.length} data sheets, ${definitions.length} definitions captured`

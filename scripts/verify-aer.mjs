@@ -17,7 +17,7 @@ import {
   mappingProblems,
   numericValue,
 } from "@/lib/sheetMapping";
-import { canonicalMetric, periodBounds } from "@/lib/aerPerformance";
+import { canonicalMetric, isAnnualPeriodLabel, periodBounds } from "@/lib/aerPerformance";
 import { PDF_KIND, SPREADSHEET_KIND, fileNameFromUrl } from "@/lib/fetchDocument";
 import { ALLOWED_SPREADSHEET_CONTENT_TYPES, ALLOWED_UPLOAD_CONTENT_TYPES } from "@/lib/upload";
 
@@ -328,6 +328,73 @@ console.log("Refusing a two-header mapping that does not hold:");
   // still use, and must keep working.
   check("periodRow 0 still means one period from the release",
     extractRows(REAL, { ...base, metricRow: 4, periodRow: 0 })[0]?.periodLabel === null);
+}
+
+
+console.log("The annual block to the right of the quarterly one:");
+{
+  // The shape that refused all six of Schedule 2's main sheets on the first
+  // real ingest. Rows 4/5 are the metric and period headers; B-C are quarters
+  // and D-E are financial years, which is how the real sheets look once you
+  // read past column 40 — where the fixture used to stop, which is exactly
+  // why this went unseen.
+  const cells = {
+    A4: "National", B4: "Customer numbers", C4: "Customer numbers",
+    D4: "Customer numbers", E4: "Customer numbers",
+    A5: "Retailer", B5: "Q3 2023-24", C5: "Q4 2023-24", D5: "2022-23", E5: "2023-24",
+    A6: "AGL", B6: 305354, C6: 301122, D6: 1200000, E6: 1210000,
+    A7: "ACT Total", B7: 198786, C7: 197001, D7: 790000, E7: 795000,
+  };
+  const sheet = sheetOf("Res Elec Cust#s & Mkt Contr", cells, 7);
+  const mapping = {
+    metricRow: 4,
+    periodRow: 5,
+    dimensions: { retailer: "A" },
+    sheetDimensions: {},
+    metrics: ["B", "C", "D", "E"].map((column) => ({
+      column, raw: "Customer numbers", metric: "customer_numbers",
+    })),
+  };
+
+  check("a bare financial year is recognised as annual", isAnnualPeriodLabel("2022-23"));
+  check("and with a four-digit tail", isAnnualPeriodLabel("2022-2023"));
+  check("and when a header dresses it up", isAnnualPeriodLabel("FY 2022-23"));
+  check("a quarter is NOT annual", !isAnnualPeriodLabel("Q4 2023-24"));
+  check("nor is the stored form", !isAnnualPeriodLabel("2023-24 Q4"));
+  check("nor is something unreadable", !isAnnualPeriodLabel("see note 4"));
+
+  const problems = mappingProblems(sheet, mapping);
+  check("the mapping is accepted despite the annual columns",
+    problems.length === 0, JSON.stringify(problems));
+
+  const rows = extractRows(sheet, mapping);
+  const periods = [...new Set(rows.map((r) => r.periodLabel))].sort();
+  check("only the quarterly columns produce rows",
+    periods.length === 2 && periods[0] === "2023-24 Q3" && periods[1] === "2023-24 Q4",
+    JSON.stringify(periods));
+  check("the annual values are nowhere in the output",
+    !rows.some((r) => r.value === 1200000 || r.value === 1210000),
+    JSON.stringify(rows.map((r) => r.value)));
+  check("AGL's two quarters carry the cell values",
+    rows.some((r) => r.retailerRaw === "AGL" && r.value === 305354) &&
+      rows.some((r) => r.retailerRaw === "AGL" && r.value === 301122),
+    JSON.stringify(rows));
+  check("the jurisdiction subtotal row is refused",
+    !rows.some((r) => /act/i.test(r.retailerRaw)),
+    JSON.stringify(rows.map((r) => r.retailerRaw)));
+  check("so AGL is the only retailer left",
+    new Set(rows.map((r) => r.retailerRaw)).size === 1,
+    JSON.stringify([...new Set(rows.map((r) => r.retailerRaw))]));
+
+  // Relaxing for the annual block must not relax for an unreadable header.
+  const brokenSheet = sheetOf("broken", { ...cells, F4: "Customer numbers", F5: "whenever" }, 7);
+  const broken = {
+    ...mapping,
+    metrics: [...mapping.metrics, { column: "F", raw: "Customer numbers", metric: "customer_numbers" }],
+  };
+  check("an unreadable period still fails the sheet",
+    mappingProblems(brokenSheet, broken).some((x) => /not a quarter/.test(x)),
+    JSON.stringify(mappingProblems(brokenSheet, broken)));
 }
 
 console.log(failures === 0 ? "\nAll AER parsing checks passed." : `\n${failures} check(s) failed.`);

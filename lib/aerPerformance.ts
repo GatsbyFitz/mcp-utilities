@@ -112,6 +112,36 @@ export function periodBounds(label: string): { start: string; end: string } | nu
 }
 
 /**
+ * A column headed by a bare financial year rather than a quarter.
+ *
+ * The five-quarter sheets carry a *second* block of columns further right
+ * whose period row holds `2019-20`, `2020-21`, … — annual figures, not
+ * quarterly ones. That was discovered the expensive way: the first real
+ * ingest refused all six of Schedule 2's main sheets, because
+ * `mappingProblems` requires every mapped column to carry a readable quarter
+ * and these carry a readable *year*.
+ *
+ * They are recognised so they can be **dropped**, not stored. An annual figure
+ * is the sum of the four quarters beside it, so filing one as an observation
+ * is the "ACT Total" failure in column form: every total the tool reports
+ * comes back inflated, invisibly, carrying the exactness it advertises.
+ *
+ * Narrow on purpose. Only a bare `YYYY-YY` or `YYYY-YYYY`, optionally wrapped
+ * in the words a header uses around one — so a quarter is never mistaken for a
+ * year, and a genuinely unreadable period still fails its sheet loudly rather
+ * than being quietly discarded as "probably annual".
+ */
+export function isAnnualPeriodLabel(raw: string): boolean {
+  const flat = raw.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!flat) return false;
+  // A quarter marker anywhere means this is not an annual column.
+  if (/\bq[1-4]\b|\bquarter\b/.test(flat)) return false;
+  return /^(fy|financial year|year|total|full year)?\s*\d{4}\s*[-–/]\s*\d{2,4}\s*(total|annual|full year)?$/.test(
+    flat
+  );
+}
+
+/**
  * The canonical form of a period label as a workbook writes it.
  *
  * The sheets put the quarter first — `Q4 2023-24` — while `periodBounds` and
