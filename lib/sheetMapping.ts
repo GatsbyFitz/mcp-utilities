@@ -19,7 +19,7 @@
 // network, credentials or model in the loop.
 
 import { canonicalDimensions } from "@/lib/aerDimensions";
-import { normalizePeriodLabel } from "@/lib/aerPerformance";
+import { isAnnualPeriodLabel, normalizePeriodLabel } from "@/lib/aerPerformance";
 
 /** The minimum a sheet has to offer. Adapted from ExcelJS at the call site. */
 export interface SheetLike {
@@ -274,6 +274,12 @@ export function mappingProblems(sheet: SheetLike, mapping: SheetMapping): string
         problems.push(
           `column ${entry.column} has no period in row ${mapping.periodRow} — the columns were read as quarters`
         );
+      } else if (isAnnualPeriodLabel(periodCell)) {
+        // Not a problem with the mapping. These sheets really do carry an
+        // annual block to the right of the quarterly one, and `extractRows`
+        // drops those columns. Treating it as a failure cost all six of
+        // Schedule 2's main sheets on the first real ingest.
+        continue;
       } else if (!normalizePeriodLabel(periodCell)) {
         problems.push(
           `column ${entry.column} period ${JSON.stringify(periodCell)} is not a quarter this app can read`
@@ -311,11 +317,28 @@ export function extractRows(sheet: SheetLike, mapping: SheetMapping): Observatio
   // One lookup per column, not per cell: the period of column F is the same
   // for all three hundred retailers below it.
   const periodByColumn = new Map<string, string | null>();
+  const annualColumns: string[] = [];
   if (mapping.periodRow > 0) {
     for (const entry of mapping.metrics) {
       const raw = text(sheet.cell(mapping.periodRow, entry.column));
+      // An annual column is skipped rather than stored: it is the sum of the
+      // quarters beside it, and an aggregate filed as an observation inflates
+      // every total computed over the set. Collected so the count can be
+      // reported — a silent drop of twenty columns is indistinguishable from a
+      // mapping that never found them.
+      if (raw && isAnnualPeriodLabel(raw)) {
+        annualColumns.push(entry.column);
+        continue;
+      }
       periodByColumn.set(entry.column, raw ? normalizePeriodLabel(raw) : null);
     }
+  }
+  if (annualColumns.length > 0) {
+    console.log(
+      `[extractRows] ${sheet.name}: skipped ${annualColumns.length} annual column(s) ` +
+        `(${annualColumns.slice(0, 8).join(", ")}${annualColumns.length > 8 ? ", …" : ""}) ` +
+        `— they aggregate the quarters beside them`
+    );
   }
 
   for (let row = start; row <= limit; row++) {

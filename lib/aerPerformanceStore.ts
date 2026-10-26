@@ -147,8 +147,17 @@ export async function queryAer(filters: AerFilters): Promise<AerResult> {
     : null;
 
   const rows = (await sql`
-    SELECT schedule, period_label, period_start, period_end, retailer, jurisdiction,
-           fuel, metric, metric_raw, value, source_file, sheet_name, cell_ref,
+    -- Every column toObservation reads, including the _raw pair and the
+    -- dimensions. Six were missing here, and the mapper's fallback to the
+    -- canonical column turned that into a plausible answer rather than an
+    -- error: the first real ingest reported a retailerRaw of 'agl', the
+    -- canonical key wearing the verbatim column's name, while the facets
+    -- query -- which does select it -- correctly reported 'AGL'.
+    -- pnpm verify:aer-projection now asserts this list covers the mapper.
+    SELECT schedule, period_label, period_start, period_end, retailer, retailer_raw,
+           jurisdiction, jurisdiction_raw, fuel, fuel_raw,
+           customer_type, customer_type_raw, release_label,
+           metric, metric_raw, value, source_file, sheet_name, cell_ref,
            COUNT(*)    OVER () AS total_count,
            SUM(value)  OVER () AS total_value,
            MAX(period_label) OVER () AS latest_period

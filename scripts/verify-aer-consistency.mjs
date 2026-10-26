@@ -217,5 +217,50 @@ console.log("A filter has to be canonicalised the same way the column was:");
     "the store must fall back to the raw string, not drop the filter");
 }
 
+console.log("\nJurisdiction subtotals, which the AER writes with Total at the END:");
+{
+  // Observed in the first real ingest: "ACT Total" was stored as a retailer
+  // with 198,786 residential contracts, to be summed alongside the ACT
+  // retailers that compose it. Every leading-anchor pattern missed it.
+  for (const label of [
+    "ACT Total",
+    "NSW Total",
+    "VIC Total",
+    "QLD Total",
+    "SA Total",
+    "TAS Total",
+    "National Total",
+    "Total",
+    "Totals",
+    "act total",
+    "ACT  Total",
+    "ACT Subtotal",
+    // The qualified leading forms the narrowed rule must still catch.
+    "Total - electricity",
+    "Total electricity",
+    "Total, all retailers",
+    "Total all retailers",
+    "Total: gas",
+    "Grand total",
+  ]) {
+    check(`"${label}" is refused as an aggregate`, isAggregateLabel(label), label);
+  }
+
+  // The trade this makes, stated as an assertion. A leading match would catch
+  // a live brand; trailing-only does not. Where the line has to fall, it falls
+  // toward refusing — a refused row is a visible gap, a stored total silently
+  // inflates every figure the tool reports.
+  for (const label of [
+    "Total Energies",
+    "Totally Renewable Pty Ltd",
+    "AGL",
+    "Origin Energy",
+    "1st Energy",
+    "EnergyAustralia",
+  ]) {
+    check(`"${label}" is NOT refused — it is a retailer`, !isAggregateLabel(label), label);
+  }
+}
+
 console.log(failures === 0 ? "\nAll AER consistency checks passed." : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);
