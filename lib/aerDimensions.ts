@@ -26,11 +26,49 @@
 //
 // Pure, importing nothing from lib/db, like the rest of the vocabulary.
 
-/** Jurisdictions the AER reports against, as it abbreviates them. */
-export const JURISDICTIONS = ["NSW", "VIC", "QLD", "SA", "TAS", "ACT", "NT", "WA"] as const;
+/**
+ * Jurisdictions the AER reports against, as it abbreviates them — plus
+ * `NATIONAL`, which is one of them and not a sum of them.
+ *
+ * `NATIONAL` is here reluctantly, because an aggregate stored as an
+ * observation is the failure this file spends most of its length warning
+ * about. It earns the exception on a fact: **the jurisdiction blocks do not
+ * sum to the national figure.** AGL's national residential electricity count
+ * is 1,518,827 while its ACT, NSW, QLD, SA and TAS blocks together come
+ * nowhere near it, because the AER does not break out Victoria — Victorian
+ * retail reports to the Essential Services Commission instead. So the national
+ * row carries customers that exist in no other row, and dropping it would lose
+ * data that cannot be recomputed from what is left.
+ *
+ * The cost is that a sum across every jurisdiction double-counts. That is
+ * real, and it is handled where sums are computed rather than left to each
+ * caller to remember — the mistake `isAggregateLabel`'s own comment warns
+ * against. The alternative, a null jurisdiction, is what collapsed eight
+ * tables into one and stored a South Australian figure as the national one.
+ */
+export const JURISDICTIONS = [
+  "NATIONAL",
+  "NSW",
+  "VIC",
+  "QLD",
+  "SA",
+  "TAS",
+  "ACT",
+  "NT",
+  "WA",
+] as const;
 export type Jurisdiction = (typeof JURISDICTIONS)[number];
 
+/**
+ * The one jurisdiction that is an aggregate over the others, named so a query
+ * can exclude it without matching on a string literal.
+ */
+export const NATIONAL: Jurisdiction = "NATIONAL";
+
 const JURISDICTION_NAMES: Record<string, Jurisdiction> = {
+  national: "NATIONAL",
+  australia: "NATIONAL",
+  "all jurisdictions": "NATIONAL",
   nsw: "NSW",
   "new south wales": "NSW",
   vic: "VIC",
@@ -48,6 +86,73 @@ const JURISDICTION_NAMES: Record<string, Jurisdiction> = {
   wa: "WA",
   "western australia": "WA",
 };
+
+
+/**
+ * What a label in column A, on a row with no values beside it, actually is.
+ *
+ * Every AER data sheet is several tables stacked vertically, and the only
+ * thing marking the boundaries is a row like this. `Res Elec Cust#s & Mkt
+ * Contr` holds fourteen of them: a note, a "Jurisdictions" divider, five
+ * jurisdictions, a "Tier 1 Retailers" divider, and then National plus the same
+ * five again for a subset of retailers.
+ *
+ * Classifying them is what keeps those tables apart. Reading the sheet as one
+ * flat table — which is what it looked like through a fixture that stopped at
+ * row 30 — put every block on one observation key and left the last one
+ * written standing for all of them.
+ *
+ * The four kinds are distinguished because each needs different handling, and
+ * conflating any two of them loses something:
+ *
+ *  - `jurisdiction` — rows below it belong to that jurisdiction.
+ *  - `divider` — structural only ("Jurisdictions"), carrying no attribution.
+ *    It must *not* clear the current jurisdiction, because the next header
+ *    sets one immediately.
+ *  - `scope` — "Tier 1 Retailers" and the like. It re-scopes the whole rest of
+ *    the sheet to a subset of retailers, which is a dimension this schema does
+ *    not have, so everything after it is dropped rather than merged into the
+ *    full-population figures it would collide with.
+ *  - `unknown` — anything else. Dropped, loudly. Letting unrecognised rows
+ *    inherit the previous block's jurisdiction is the wrongly-merged failure,
+ *    and a gap in the data is visible where a wrong attribution is not.
+ */
+export type BlockLabelKind = "jurisdiction" | "divider" | "scope" | "unknown";
+
+/** Section dividers that carry no attribution of their own. */
+const BLOCK_DIVIDERS = new Set([
+  "jurisdictions",
+  "jurisdiction",
+  "by jurisdiction",
+  "states",
+  "state",
+  "retailers",
+  "retailer",
+]);
+
+export function blockLabelKind(raw: string): {
+  kind: BlockLabelKind;
+  jurisdiction: Jurisdiction | null;
+} {
+  const flat = flatten(raw)
+    .replace(/[.]/g, "")
+    .replace(/[\s]*[*†‡]+$/, "")
+    .trim();
+  if (!flat) return { kind: "unknown", jurisdiction: null };
+
+  const jurisdiction = canonicalJurisdiction(flat);
+  if (jurisdiction) return { kind: "jurisdiction", jurisdiction };
+
+  if (BLOCK_DIVIDERS.has(flat)) return { kind: "divider", jurisdiction: null };
+
+  // "Tier 1 Retailers", "Tier 2", "Second tier retailers" — a retailer-set
+  // scope. Matched on the word rather than the exact phrase because the
+  // wording varies between schedules and a missed one would silently merge a
+  // subset's figures into the whole population's.
+  if (/\btier\s*\d?\b/.test(flat)) return { kind: "scope", jurisdiction: null };
+
+  return { kind: "unknown", jurisdiction: null };
+}
 
 /** Fuels, as the schedules distinguish them. */
 export const FUELS = ["electricity", "gas", "dual"] as const;
@@ -208,8 +313,16 @@ export function canonicalJurisdiction(raw: string | null): Jurisdiction | null {
     .replace(/[.]/g, "")
     .replace(/[\s]*[*†‡]+$/, "")
     .trim();
-  if (!flat || isAggregateLabel(flat)) return null;
-  return JURISDICTION_NAMES[flat] ?? null;
+  if (!flat) return null;
+  // Looked up before the aggregate guard, not after. "National" and
+  // "Australia" are both in AGGREGATE_LABELS — correctly, for a *retailer*
+  // cell — so checking that first returned null for the one jurisdiction the
+  // AER reports most of its data against, and a null jurisdiction is what let
+  // every block share a key.
+  const named = JURISDICTION_NAMES[flat];
+  if (named) return named;
+  if (isAggregateLabel(flat)) return null;
+  return null;
 }
 
 /** The canonical fuel, or null when the cell does not name one. */

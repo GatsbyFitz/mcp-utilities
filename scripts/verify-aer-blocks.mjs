@@ -34,7 +34,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { extractRows, mappingProblems } from "@/lib/sheetMapping";
-import { canonicalJurisdiction, isAggregateLabel } from "@/lib/aerDimensions";
+import {
+  JURISDICTIONS,
+  NATIONAL,
+  blockLabelKind,
+  canonicalJurisdiction,
+  isAggregateLabel,
+} from "@/lib/aerDimensions";
 
 let failures = 0;
 const check = (label, ok, detail) => {
@@ -128,21 +134,25 @@ console.log("\nAGL appears in every block, and must not collapse to one row:");
     A6: "AGL", B6: 1496817, C6: 1509284,
     A7: "Origin Energy", B7: 1000000, C7: 1010000,
 
-    // Divider, then two jurisdiction blocks.
+    // Divider, then three jurisdiction blocks.
     A8: "Jurisdictions",
     A9: "ACT",
     A10: "AGL", B10: 50000, C10: 51000,
     A11: "NSW",
     A12: "AGL", B12: 400000, C12: 401000,
+    A13: "SA",
+    A14: "AGL", B14: 303627, C14: 305354,
 
-    // Second section: the same jurisdictions for a subset of retailers.
-    A13: "Tier 1 Retailers",
-    A14: "National",
-    A15: "AGL", B15: 1400000, C15: 1410000,
-    A16: "SA",
-    A17: "AGL", B17: 303627, C17: 305354,
+    // Second section: the same jurisdictions again for a subset of retailers.
+    // Everything from here on must be dropped — it would collide with the
+    // full-population rows above and the schema cannot tell them apart.
+    A15: "Tier 1 Retailers",
+    A16: "National",
+    A17: "AGL", B17: 1400000, C17: 1410000,
+    A18: "SA",
+    A19: "AGL", B19: 299000, C19: 299500,
   };
-  const sheet = sheetOf("Res Elec Cust#s & Mkt Contr", cells, 17);
+  const sheet = sheetOf("Res Elec Cust#s & Mkt Contr", cells, 19);
   const mapping = {
     metricRow: 4,
     periodRow: 5,
@@ -181,17 +191,17 @@ console.log("\nAGL appears in every block, and must not collapse to one row:");
   }
   check(
     "AGL's ACT figures are attributed to ACT",
-    agl.some((r) => r.jurisdiction === "act" && r.value === 51000),
+    agl.some((r) => r.jurisdiction === "ACT" && r.value === 51000),
     JSON.stringify(agl.map((r) => [r.jurisdiction, r.value]))
   );
   check(
     "AGL's NSW figures are attributed to NSW",
-    agl.some((r) => r.jurisdiction === "nsw" && r.value === 401000),
+    agl.some((r) => r.jurisdiction === "NSW" && r.value === 401000),
     JSON.stringify(agl.map((r) => [r.jurisdiction, r.value]))
   );
   check(
     "AGL's SA figures are attributed to SA",
-    agl.some((r) => r.jurisdiction === "sa" && r.value === 305354),
+    agl.some((r) => r.jurisdiction === "SA" && r.value === 305354),
     JSON.stringify(agl.map((r) => [r.jurisdiction, r.value]))
   );
 
@@ -201,6 +211,30 @@ console.log("\nAGL appears in every block, and must not collapse to one row:");
     "the SA figure is NOT filed with a null jurisdiction",
     !agl.some((r) => r.jurisdiction === null && r.value === 305354),
     "This is the bug: 305,354 is AGL in South Australia, stored as if national."
+  );
+  check(
+    "no row at all carries a null jurisdiction",
+    !agl.some((r) => r.jurisdiction === null),
+    JSON.stringify(agl.map((r) => [r.jurisdiction, r.value]))
+  );
+  // National is stored rather than dropped, because the jurisdiction blocks do
+  // not sum to it: the AER omits Victoria, so the national row carries
+  // customers that appear nowhere else.
+  check(
+    "the National block is kept, with an explicit jurisdiction",
+    agl.some((r) => r.jurisdiction === "NATIONAL" && r.value === 1509284),
+    JSON.stringify(agl.map((r) => [r.jurisdiction, r.value]))
+  );
+  check(
+    "and its raw spelling is the sheet's own",
+    agl.some((r) => r.jurisdiction === "NATIONAL" && r.jurisdictionRaw === "National"),
+    JSON.stringify(agl.map((r) => [r.jurisdiction, r.jurisdictionRaw]))
+  );
+  // Everything after the scope divider is dropped.
+  check(
+    "the Tier 1 section produces no rows",
+    !agl.some((r) => [1400000, 1410000, 299000, 299500].includes(r.value)),
+    JSON.stringify(agl.map((r) => [r.jurisdiction, r.value]))
   );
 
   // Blocks must produce distinct keys, which is what stops the collapse.
@@ -229,6 +263,65 @@ console.log("\nAGL appears in every block, and must not collapse to one row:");
     rows.length > 0 && rows.every((r) => r.customerType === "residential"),
     JSON.stringify([...new Set(rows.map((r) => r.customerType))])
   );
+}
+
+// ---------------------------------------------------------------------------
+// Can it be got back out again?
+// ---------------------------------------------------------------------------
+// `queryAer` canonicalises an incoming jurisdiction filter and compares it
+// case-insensitively, so whatever a caller types has to land on the stored
+// code. That path is newly load-bearing: NATIONAL is a value that did not
+// exist before this change, and the jurisdiction column was null on every row
+// ever stored, so no filter on it has ever actually matched anything.
+console.log("\nRetrieving it: what a caller can type and still match:");
+{
+  check("NATIONAL is in the closed vocabulary, so a facet can list it",
+    JURISDICTIONS.includes(NATIONAL), JSON.stringify(JURISDICTIONS));
+
+  // Each of these is what a model or a person would plausibly send.
+  for (const [typed, expected] of [
+    ["National", "NATIONAL"],
+    ["national", "NATIONAL"],
+    ["NATIONAL", "NATIONAL"],
+    ["Australia", "NATIONAL"],
+    ["All jurisdictions", "NATIONAL"],
+    ["NSW", "NSW"],
+    ["nsw", "NSW"],
+    ["New South Wales", "NSW"],
+    ["ACT", "ACT"],
+    ["Australian Capital Territory", "ACT"],
+    ["SA", "SA"],
+    ["South Australia", "SA"],
+    ["Victoria", "VIC"],
+  ]) {
+    check(`a filter of "${typed}" resolves to ${expected}`,
+      canonicalJurisdiction(typed) === expected,
+      `got ${JSON.stringify(canonicalJurisdiction(typed))}`);
+  }
+
+  // And what must NOT resolve, so an unrecognised filter narrows to nothing
+  // rather than quietly widening to everything.
+  for (const typed of ["Jurisdictions", "Tier 1 Retailers", "somewhere", "Total"]) {
+    check(`a filter of "${typed}" resolves to nothing`,
+      canonicalJurisdiction(typed) === null,
+      `got ${JSON.stringify(canonicalJurisdiction(typed))}`);
+  }
+
+  // The classifier's four kinds, since every block in every sheet goes
+  // through it and an unknown is dropped rather than misattributed.
+  check("a jurisdiction header classifies as one",
+    blockLabelKind("NSW").kind === "jurisdiction");
+  check("National classifies as a jurisdiction, not an aggregate to discard",
+    blockLabelKind("National").kind === "jurisdiction" &&
+      blockLabelKind("National").jurisdiction === "NATIONAL");
+  check('"Jurisdictions" classifies as a divider',
+    blockLabelKind("Jurisdictions").kind === "divider");
+  check('"Tier 1 Retailers" classifies as a scope change',
+    blockLabelKind("Tier 1 Retailers").kind === "scope");
+  check('"Tier 2" does too, since the wording varies',
+    blockLabelKind("Tier 2").kind === "scope");
+  check("anything else is unknown, and its block is dropped",
+    blockLabelKind("Some note about the data").kind === "unknown");
 }
 
 console.log(

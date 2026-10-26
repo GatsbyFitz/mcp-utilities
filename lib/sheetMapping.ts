@@ -18,7 +18,7 @@
 // half that has to be exactly right is verified with a plain object and no
 // network, credentials or model in the loop.
 
-import { canonicalDimensions } from "@/lib/aerDimensions";
+import { blockLabelKind, canonicalDimensions } from "@/lib/aerDimensions";
 import { isAnnualPeriodLabel, normalizePeriodLabel } from "@/lib/aerPerformance";
 
 /** The minimum a sheet has to offer. Adapted from ExcelJS at the call site. */
@@ -341,15 +341,82 @@ export function extractRows(sheet: SheetLike, mapping: SheetMapping): Observatio
     );
   }
 
+  // ---------------------------------------------------------------------
+  // The sheet is several tables, not one
+  // ---------------------------------------------------------------------
+  // Every AER data sheet stacks tables vertically, divided by a row whose
+  // first column holds a label and whose value columns are empty. `Res Elec
+  // Cust#s & Mkt Contr` has fourteen such rows across 323: a note, a
+  // "Jurisdictions" divider, five jurisdictions, a "Tier 1 Retailers"
+  // divider, then National and the same five again for a subset.
+  //
+  // Read as one table — which is how it looked through a fixture that stopped
+  // at row 30 — every block lands on the same observation key and the
+  // uniqueness index keeps whichever was written last. That is how AGL's
+  // national figure came to be its South Australian Tier 1 figure: wrong by
+  // 80%, with a cell reference attached, and nothing downstream able to tell.
+  //
+  // So the jurisdiction comes from the block a row sits in. The sheet-level
+  // cell is the *first* block's label and nothing more; it seeds this and is
+  // then overwritten by each header.
+  let blockJurisdiction: string | null = sheetJurisdiction;
+  // Set once a scope divider is passed. Everything after re-describes a
+  // subset of retailers, which this schema cannot distinguish from the whole
+  // population, so it is dropped rather than merged into figures it would
+  // collide with.
+  let scopeEnded = false;
+  const dropped = { scope: 0, unknown: 0, blocks: [] as string[] };
+
+  /**
+   * A label row rather than a data row: something in the retailer column and
+   * no value anywhere the mapping expects one.
+   *
+   * Decided from the mapped columns rather than a fixed few, because the
+   * value columns differ per sheet and a header that happened to have a
+   * number in column B would otherwise read as data.
+   */
+  const isBlockHeader = (row: number): boolean =>
+    mapping.metrics.every((entry) => numericValue(sheet.cell(row, entry.column)) === null);
+
   for (let row = start; row <= limit; row++) {
     const retailerRaw = text(sheet.cell(row, mapping.dimensions.retailer));
     if (!retailerRaw) continue;
 
+    if (isBlockHeader(row)) {
+      const { kind, jurisdiction } = blockLabelKind(retailerRaw);
+      if (kind === "jurisdiction") {
+        // The label as the workbook wrote it, not the canonical code, so
+        // `jurisdiction_raw` keeps the spelling — the same discipline the
+        // retailer and fuel columns follow. `canonicalDimensions` reduces it.
+        blockJurisdiction = retailerRaw;
+        dropped.blocks.push(`${jurisdiction}@${row}`);
+      } else if (kind === "scope") {
+        // Not reset per block: the rest of the sheet is in this scope.
+        scopeEnded = true;
+      } else if (kind === "unknown") {
+        // An unrecognised header must not leave the previous jurisdiction in
+        // place — rows below it would be attributed to a jurisdiction they do
+        // not belong to, which is invisible, where a gap is not.
+        blockJurisdiction = null;
+        dropped.unknown++;
+      }
+      // A divider carries no attribution and deliberately changes nothing.
+      continue;
+    }
+
+    if (scopeEnded) {
+      dropped.scope++;
+      continue;
+    }
+
     // A column wins over the sheet-level cell: if a sheet both states a fuel
     // above the table and breaks it down per row, the row is the finer truth.
+    // A column still wins where a sheet has one: that is the finer truth. With
+    // no column, the block the row sits in decides — not the sheet-level cell,
+    // which names only the first block.
     const jurisdictionRaw = mapping.dimensions.jurisdiction
       ? text(sheet.cell(row, mapping.dimensions.jurisdiction)) || null
-      : sheetJurisdiction;
+      : blockJurisdiction;
     const fuelRaw = mapping.dimensions.fuel
       ? text(sheet.cell(row, mapping.dimensions.fuel)) || null
       : sheetFuel;
@@ -396,6 +463,17 @@ export function extractRows(sheet: SheetLike, mapping: SheetMapping): Observatio
         cellRef: `${entry.column}${row}`,
       });
     }
+  }
+
+  // Said out loud rather than left as a smaller number than expected. A
+  // silently dropped scope section looks exactly like a sheet that was shorter
+  // than it is.
+  if (dropped.scope > 0 || dropped.unknown > 0) {
+    console.log(
+      `[extractRows] ${sheet.name}: dropped ${dropped.scope} row(s) after a retailer-scope ` +
+        `divider and ${dropped.unknown} row(s) under an unrecognised block header` +
+        (dropped.blocks.length > 0 ? `; blocks read: ${dropped.blocks.join(", ")}` : "")
+    );
   }
 
   return rows;
