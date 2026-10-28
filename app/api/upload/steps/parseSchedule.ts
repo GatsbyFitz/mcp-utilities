@@ -156,6 +156,10 @@ export interface InferenceResult {
   definitions: CapturedDefinition[];
 }
 
+/** A header row the model named, or undefined when it said "not this shape". */
+const positiveRow = (n: number): number | undefined =>
+  Number.isInteger(n) && n > 0 ? n : undefined;
+
 const MappingSchema = z.object({
   isData: z.boolean(),
   metricRow: z.number().default(0),
@@ -167,6 +171,9 @@ const MappingSchema = z.object({
   jurisdictionCell: z.string().default(""),
   fuelCell: z.string().default(""),
   customerTypeCell: z.string().default(""),
+  jurisdictionGroupRow: z.number().default(0),
+  fuelGroupRow: z.number().default(0),
+  customerTypeGroupRow: z.number().default(0),
   metrics: z
     .array(
       z.object({
@@ -218,8 +225,22 @@ If it is data, identify:
 - "metrics": every column that holds a measurement, as { column, header, matchesKnownMetric }. When the columns are quarters, list EVERY one — five "Customer numbers" columns are five entries, not one.
 - "jurisdictionColumn" / "fuelColumn" / "customerTypeColumn": the column letter, when the value varies row by row; "" otherwise.
 - "jurisdictionCell" / "fuelCell" / "customerTypeCell": the cell reference (e.g. "B3") when the value is stated once for the whole sheet; "" otherwise. In the example these are "A4", "B3" and "C3".
+- "jurisdictionGroupRow" / "fuelGroupRow" / "customerTypeGroupRow": the row number when the value changes ACROSS COLUMN GROUPS rather than per row or per sheet; 0 otherwise. This is a third shape and it is easy to miss. A sheet can have four header levels:
 
-Give a column letter OR a cell reference for each dimension, never both. Customer segment means Residential / Small Business / Large.
+  row 3:  (blank) | Electricity ...                      | Gas ...
+  row 4:  Residential x10 | Small Business x10 | Large x10 | Residential x10 ...
+  row 5:  the measure, repeated per quarter
+  row 6:  the quarter per column
+
+  Here "fuelGroupRow" is 3 and "customerTypeGroupRow" is 4. The label is written ONCE at the start of each group and the cells to its right are left empty, so read a column's value by looking LEFT to the nearest label on that row.
+
+  Getting this wrong is the most damaging mistake available on these sheets. Without row 4, the Residential, Small Business and Large groups all describe the same measure for the same quarter, so they collide on one record and two thirds of the sheet is lost with no error.
+
+Give a column letter, OR a cell reference, OR a group row for each dimension — never more than one. Customer segment means Residential / Small Business / Large.
+
+Do NOT fold a dimension into the measure name to keep two columns apart. "Standard to Market" for Residential and for Small Business is ONE measure with a customer-segment dimension, not two measures. Name the group row instead.
+
+A measure header can also be a bare qualifier repeated across groups, like "% of Tariffs" sitting beside each tariff type it is a percentage OF. That is not a dimension this schema has, so there give each one a distinct, descriptive "header" that says which thing it is a percentage of — otherwise those columns collide too.
 
 For "matchesKnownMetric": these metrics are already recorded for this schedule from earlier quarters.
 
@@ -314,6 +335,14 @@ export async function inferMappings(
             jurisdiction: output.jurisdictionCell.trim().toUpperCase() || undefined,
             fuel: output.fuelCell.trim().toUpperCase() || undefined,
             customerType: output.customerTypeCell.trim().toUpperCase() || undefined,
+          },
+          // Clamped in code rather than with Zod `.min`, per the
+          // workflow-steps rule: Gemini drops those constraints and still
+          // rejects the response. A row of 0 means "not this shape".
+          dimensionRows: {
+            jurisdiction: positiveRow(output.jurisdictionGroupRow),
+            fuel: positiveRow(output.fuelGroupRow),
+            customerType: positiveRow(output.customerTypeGroupRow),
           },
           metrics: output.metrics.slice(0, 200).map((m) => ({
             column: m.column.trim().toUpperCase(),
