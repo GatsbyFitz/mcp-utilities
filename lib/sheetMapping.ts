@@ -77,6 +77,34 @@ export interface SheetMapping {
     fuel?: string;
     customerType?: string;
   };
+  /**
+   * Rows that state a dimension per *column group*, which is the third shape
+   * these sheets use and the one this mapping could not express.
+   *
+   * `Switch# Standard to Market` has four header levels, not two:
+   *
+   *   row 3:  (blank) | Electricity ... | Gas ...        <- fuel, per group
+   *   row 4:  Residential x10 | Small Business x10 | Large x10
+   *   row 5:  the measure
+   *   row 6:  the quarter per column
+   *
+   * Read without row 4, the Residential, Small Business and Large groups all
+   * write the same `(retailer, metric, period, …)` key and two thirds of the
+   * sheet is silently overwritten — the stacked-block failure again, turned
+   * ninety degrees. It is why six of Schedule 2's fifteen sheets were
+   * rejected once `mappingProblems` started refusing a guaranteed collision.
+   *
+   * A dimension here is resolved by carrying the nearest label at or to the
+   * **left** forward, because that is how the sheet reads: `B3` says
+   * "Electricity" and means it for every column up to `AJ3`, which says
+   * "Gas". The same carry-forward as the block attribution, along the other
+   * axis.
+   */
+  dimensionRows?: {
+    jurisdiction?: number;
+    fuel?: number;
+    customerType?: number;
+  };
   metrics: {
     /** Column letter. */
     column: string;
@@ -87,6 +115,52 @@ export interface SheetMapping {
   }[];
   /** Anything the model wants to say about how it read the sheet. */
   notes?: string;
+}
+
+/** "A" → 1, "AA" → 27. */
+export function columnIndex(letters: string): number {
+  let n = 0;
+  for (const ch of letters.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n;
+}
+
+/** 1 → "A", 27 → "AA". */
+export function columnLetters(index: number): string {
+  let s = "";
+  let n = index;
+  while (n > 0) {
+    const m = (n - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+/**
+ * The dimension a column inherits from a header row, by carrying the nearest
+ * label at or to its left forward.
+ *
+ * The AER does not merge these cells across the group — `B3` holds
+ * "Electricity" and `C3` through `AI3` are simply empty — so a direct read
+ * returns nothing for all but the first column of each group. A human reads
+ * it by looking left, and so does this.
+ *
+ * Bounded by `firstColumn` so a label outside the table cannot leak into it,
+ * and it stops at the first non-empty cell rather than scanning to column A.
+ */
+export function columnGroupLabel(
+  sheet: SheetLike,
+  row: number,
+  column: string,
+  firstColumn: string
+): string | null {
+  const start = columnIndex(column);
+  const floor = columnIndex(firstColumn);
+  for (let i = start; i >= floor; i--) {
+    const value = text(sheet.cell(row, columnLetters(i)));
+    if (value) return value;
+  }
+  return null;
 }
 
 /** "B3" → { column: "B", row: 3 }, or null. */
@@ -303,6 +377,13 @@ export function mappingProblems(sheet: SheetLike, mapping: SheetMapping): string
   // one quarter is a collision. Annual columns are left out because
   // `extractRows` drops them before anything is written.
   const claimed = new Map<string, string>();
+  const firstMapped = mapping.metrics.reduce(
+    (lowest, entry) =>
+      COLUMN.test(entry.column ?? "") && columnIndex(entry.column) < columnIndex(lowest)
+        ? entry.column
+        : lowest,
+    mapping.metrics.find((e) => COLUMN.test(e.column ?? ""))?.column ?? "A"
+  );
   for (const entry of mapping.metrics) {
     if (!entry.metric || !COLUMN.test(entry.column ?? "")) continue;
     let period = "";
@@ -311,13 +392,33 @@ export function mappingProblems(sheet: SheetLike, mapping: SheetMapping): string
       if (!cell || isAnnualPeriodLabel(cell)) continue;
       period = normalizePeriodLabel(cell) ?? "";
     }
-    const key = `${entry.metric}@${period}`;
+    // The per-column dimensions belong in the key, or this refuses the very
+    // sheets `dimensionRows` exists to read: three groups of the same metric
+    // and the same quarter are a collision only if nothing distinguishes
+    // them, and the group header is what does.
+    const rows_ = mapping.dimensionRows;
+    const group = rows_
+      ? [
+          rows_.jurisdiction
+            ? columnGroupLabel(sheet, rows_.jurisdiction, entry.column, firstMapped)
+            : "",
+          rows_.fuel ? columnGroupLabel(sheet, rows_.fuel, entry.column, firstMapped) : "",
+          rows_.customerType
+            ? columnGroupLabel(sheet, rows_.customerType, entry.column, firstMapped)
+            : "",
+        ].join("|")
+      : "";
+    const key = `${entry.metric}@${period}@${group}`;
     const prior = claimed.get(key);
     if (prior) {
       problems.push(
         `columns ${prior} and ${entry.column} both map to metric ${JSON.stringify(entry.metric)}` +
           (period ? ` for ${period}` : "") +
-          " — one would silently overwrite the other"
+          (group.replace(/\|/g, "") ? ` in ${group.replace(/\|+/g, " ").trim()}` : "") +
+          " — one would silently overwrite the other" +
+          (mapping.dimensionRows
+            ? ""
+            : ". If a header row above distinguishes these column groups, name it in dimensionRows")
       );
     } else {
       claimed.set(key, entry.column);
@@ -395,6 +496,34 @@ export function extractRows(sheet: SheetLike, mapping: SheetMapping): Observatio
   // So the jurisdiction comes from the block a row sits in. The sheet-level
   // cell is the *first* block's label and nothing more; it seeds this and is
   // then overwritten by each header.
+  // Per-column dimensions, resolved once: they depend on the column, not the
+  // row. `columnGroupLabel` carries the nearest label at or to the left
+  // forward, because the AER leaves the rest of each group's cells empty.
+  const firstMetricColumn =
+    mapping.metrics.length > 0
+      ? mapping.metrics.reduce(
+          (lowest, entry) =>
+            columnIndex(entry.column) < columnIndex(lowest) ? entry.column : lowest,
+          mapping.metrics[0].column
+        )
+      : "A";
+  const columnDims = new Map<
+    string,
+    { jurisdiction: string | null; fuel: string | null; customerType: string | null }
+  >();
+  if (mapping.dimensionRows) {
+    const { jurisdiction: jRow, fuel: fRow, customerType: cRow } = mapping.dimensionRows;
+    for (const entry of mapping.metrics) {
+      columnDims.set(entry.column, {
+        jurisdiction: jRow ? columnGroupLabel(sheet, jRow, entry.column, firstMetricColumn) : null,
+        fuel: fRow ? columnGroupLabel(sheet, fRow, entry.column, firstMetricColumn) : null,
+        customerType: cRow
+          ? columnGroupLabel(sheet, cRow, entry.column, firstMetricColumn)
+          : null,
+      });
+    }
+  }
+
   let blockJurisdiction: string | null = sheetJurisdiction;
   // Set once a scope divider is passed. Everything after re-describes a
   // subset of retailers, which this schema cannot distinguish from the whole
@@ -482,16 +611,32 @@ export function extractRows(sheet: SheetLike, mapping: SheetMapping): Observatio
         if (!periodLabel) continue;
       }
 
+      // Precedence, most specific first: a per-row column, then the column's
+      // own group header, then the sheet-level cell or block. A sheet uses one
+      // shape or the other for a given dimension; where it somehow has both,
+      // the per-row column stays the finer truth because it varies per row.
+      const group = columnDims.get(entry.column);
+      const cellDims = group
+        ? canonicalDimensions(
+            retailerRaw,
+            mapping.dimensions.jurisdiction ? jurisdictionRaw : group.jurisdiction ?? jurisdictionRaw,
+            mapping.dimensions.fuel ? fuelRaw : group.fuel ?? fuelRaw,
+            mapping.dimensions.customerType
+              ? customerTypeRaw
+              : group.customerType ?? customerTypeRaw
+          )
+        : dims;
+
       rows.push({
         periodLabel,
-        retailer: dims.retailer,
-        retailerRaw: dims.retailerRaw,
-        jurisdiction: dims.jurisdiction,
-        jurisdictionRaw: dims.jurisdictionRaw,
-        fuel: dims.fuel,
-        fuelRaw: dims.fuelRaw,
-        customerType: dims.customerType,
-        customerTypeRaw: dims.customerTypeRaw,
+        retailer: cellDims.retailer,
+        retailerRaw: cellDims.retailerRaw,
+        jurisdiction: cellDims.jurisdiction,
+        jurisdictionRaw: cellDims.jurisdictionRaw,
+        fuel: cellDims.fuel,
+        fuelRaw: cellDims.fuelRaw,
+        customerType: cellDims.customerType,
+        customerTypeRaw: cellDims.customerTypeRaw,
         metric: entry.metric,
         metricRaw: entry.raw,
         value,

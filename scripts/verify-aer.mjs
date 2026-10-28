@@ -497,6 +497,104 @@ console.log("The annual block to the right of the quarterly one:");
 }
 
 // ---------------------------------------------------------------------------
+// A dimension stated across column groups
+// ---------------------------------------------------------------------------
+// Observed, not constructed. This is the header band of `Switch# Standard to
+// Market` in the real Q4 2023-24 workbook, read with ExcelJS from the file
+// itself:
+//
+//   r3: A3="Q4 2022-23 to Q4 2023-24" ; B3=Electricity ;             AJ3=Gas
+//   r4: B4..K4=Residential ; M4..V4=Small Business ; X4..AG4=Large ; AJ4=Residential
+//   r5: the measure, repeated per quarter
+//   r6: the quarter per column
+//
+// Four header levels where the mapping modelled two. Read without row 4, the
+// Residential, Small Business and Large groups all write the same
+// (retailer, metric, period) key and two thirds of a 67-column sheet is
+// overwritten with no error — the stacked-block failure turned ninety
+// degrees. Six of Schedule 2's fifteen sheets hit this.
+//
+// Note the two spellings the AER mixes within one sheet: row 4 repeats its
+// label in every column, row 3 writes it once and leaves the rest of the
+// group empty. So a column's value is the nearest label at or to its left.
+{
+  console.log("\na dimension across column groups");
+
+  // Faithful miniature: three groups of two quarters. Fuel is written once
+  // per group (B3, F3) and customer type in every column, exactly as the real
+  // sheet mixes them.
+  const cells = {
+    B3: "Electricity", F3: "Gas",
+    B4: "Residential", C4: "Residential",
+    D4: "Small Business", E4: "Small Business",
+    F4: "Residential", G4: "Residential",
+    B5: "Standard to Market", C5: "Standard to Market", D5: "Standard to Market",
+    E5: "Standard to Market", F5: "Standard to Market", G5: "Standard to Market",
+    A6: "Retailer",
+    B6: "Q3 2023-24", C6: "Q4 2023-24", D6: "Q3 2023-24",
+    E6: "Q4 2023-24", F6: "Q3 2023-24", G6: "Q4 2023-24",
+    A7: "AGL", B7: 11, C7: 12, D7: 21, E7: 22, F7: 31, G7: 32,
+  };
+  const sheet = sheetOf("Switch# Standard to Market", cells, 7);
+  const base = {
+    metricRow: 5, periodRow: 6,
+    dimensions: { retailer: "A" }, sheetDimensions: {},
+    metrics: ["B", "C", "D", "E", "F", "G"].map((column) => ({
+      column, raw: "Standard to Market", metric: "standard_to_market",
+    })),
+  };
+
+  // Without the group rows this is a guaranteed collision, and must be said.
+  const blind = mappingProblems(sheet, base);
+  check("without the group rows the collision is refused",
+    blind.some((x) => /both map to metric/.test(x)), JSON.stringify(blind.slice(0, 2)));
+  check("and the complaint points at the fix",
+    blind.some((x) => /dimensionRows/.test(x)), JSON.stringify(blind.slice(0, 1)));
+
+  const mapping = { ...base, dimensionRows: { fuel: 3, customerType: 4 } };
+  check("with them the mapping is accepted",
+    mappingProblems(sheet, mapping).length === 0,
+    JSON.stringify(mappingProblems(sheet, mapping)));
+
+  const rows = extractRows(sheet, mapping);
+  check("every column produces its own observation",
+    rows.length === 6, JSON.stringify(rows.length));
+
+  const keyed = new Map(
+    rows.map((r) => [`${r.fuel}/${r.customerType}/${r.periodLabel}`, r.value])
+  );
+  check("each group carries its own fuel and customer segment",
+    keyed.get("electricity/residential/2023-24 Q3") === 11 &&
+      keyed.get("electricity/residential/2023-24 Q4") === 12 &&
+      keyed.get("electricity/small_business/2023-24 Q3") === 21 &&
+      keyed.get("electricity/small_business/2023-24 Q4") === 22 &&
+      keyed.get("gas/residential/2023-24 Q3") === 31 &&
+      keyed.get("gas/residential/2023-24 Q4") === 32,
+    JSON.stringify([...keyed]));
+
+  // The carry-forward is the part that is easy to get wrong: C3 and D3 are
+  // empty, and those columns are still Electricity.
+  check("a column with an empty group cell looks left, not up",
+    keyed.get("electricity/small_business/2023-24 Q3") === 21,
+    JSON.stringify([...keyed]));
+  check("and the raw spelling is kept, as every other dimension does",
+    rows.every((r) => r.fuelRaw === "Electricity" || r.fuelRaw === "Gas"),
+    JSON.stringify(rows.map((r) => r.fuelRaw)));
+
+  // It must not reach past the table into whatever sits left of the metrics.
+  const bounded = sheetOf("Switch# Standard to Market", { ...cells, A3: "Q4 2022-23 to Q4 2023-24" }, 7);
+  check("the carry-forward stops at the first mapped column",
+    extractRows(bounded, mapping).every((r) => r.fuel === "electricity" || r.fuel === "gas"),
+    JSON.stringify(extractRows(bounded, mapping).map((r) => r.fuelRaw)));
+
+  // One metric with a dimension, not six metrics. Folding the segment into
+  // the measure name would split a series that the schema can hold whole.
+  check("it stays one metric across all six columns",
+    new Set(rows.map((r) => r.metric)).size === 1,
+    JSON.stringify([...new Set(rows.map((r) => r.metric))]));
+}
+
+// ---------------------------------------------------------------------------
 // A sheet can parse cleanly and still yield nothing
 // ---------------------------------------------------------------------------
 // These shapes are constructed, not observed — unlike the block fixtures,
