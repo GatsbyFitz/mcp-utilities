@@ -53,6 +53,23 @@ The measure is on row 4 and each column is a different **quarter**, named on row
 
 Fuel, customer segment and jurisdiction are stated in cells *above* the table (`B3`, `C3`, `A4`), not in columns, so `sheetDimensions` takes cell references and a column wins over a sheet-level cell where a sheet does both. Customer segment is a dimension the table did not have: without it the Residential, Small Business and Large sheets share a key and overwrite each other.
 
+**And a dimension can be stated across column groups.** The third shape, and in Schedule 3 the dominant one: **21 of its 29 sheets** have a header row whose labels are written once per column group rather than once per column. `Switch# Standard to Market` is four header levels deep:
+
+```
+r3:  (blank) | Electricity ...                         | Gas ...
+r4:  Residential x10 | Small Business x10 | Large x10   | Residential x10 ...
+r5:  the measure, repeated per quarter
+r6:  the quarter per column
+```
+
+Read without row 4, the Residential, Small Business and Large groups all write the same `(retailer, metric, period_label, …)` key and two thirds of a 67-column sheet is overwritten with nothing raised — the stacked-block failure turned ninety degrees. Six of Schedule 2's fifteen sheets hit it, and they were being written corrupted until `mappingProblems` started refusing a guaranteed collision.
+
+`dimensionRows` carries it. A column's value is the nearest label at or to its **left**, because the AER mixes two spellings inside one sheet: row 4 repeats its label in every column while row 3 writes it once and leaves the group's remaining cells empty. The carry-forward is bounded by the first mapped column so nothing outside the table leaks in. Precedence is most-specific-first — a per-row column, then the column's group header, then the sheet-level cell or block — and the collision key includes the resolved group, or the check would refuse the very sheets the feature exists to read.
+
+Two rules the prompt now states, because both are judgements only the model can make. A dimension must not be folded into the measure name to keep two columns apart: "Standard to Market" for Residential and for Small Business is one measure with a segment, not two measures, and folding splits a series the schema can hold whole. And where a header is a bare qualifier repeated across groups — `% of Tariffs` sitting beside each tariff type it is a percentage *of* — each needs a distinct descriptive header, since tariff type is not a dimension this schema has.
+
+Not every sheet fits. `Switching` is transposed: rows are quarters, columns are jurisdictions, and there is no retailer axis at all. It cannot be represented here, and being skipped by name with a reason is the right outcome rather than something to force.
+
 **And the rows are several tables.** This is the other half of the same mistake and it cost more. A 323-row Schedule 2 sheet is eight stacked tables, divided by a row that holds a label in the retailer column and no value in any mapped column:
 
 ```

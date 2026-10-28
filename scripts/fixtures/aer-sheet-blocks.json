@@ -1,7 +1,7 @@
 {
   "capturedAt": "2026-10-26",
   "capturedFrom": "Schedule 2/3/4 Quarter 4 2023-24, read with exceljs from a Sydney sandbox",
-  "note": "Block structure observed in real AER workbooks, transcribed from the capture run. A block header is a row whose column A holds a label while the first value columns are empty. These are the rows that divide one sheet into several independently-scoped tables — the structure that made every jurisdiction's figures collide onto one key, because nothing in the code knew the blocks existed. `widestColumn` is recorded because the first fixture stopped at column 40 (AN) and so could not see either the annual column block or the full width of any sheet.",
+  "note": "Block structure observed in real AER workbooks, transcribed from the capture run. A block header is a row whose column A holds a label while the first value columns are empty. These are the rows that divide one sheet into several independently-scoped tables \u2014 the structure that made every jurisdiction's figures collide onto one key, because nothing in the code knew the blocks existed. `widestColumn` is recorded because the first fixture stopped at column 40 (AN) and so could not see either the annual column block or the full width of any sheet.",
   "sheets": [
     {
       "schedule": 2,
@@ -13,20 +13,62 @@
       "headerRow": 5,
       "firstDataRow": 6,
       "blocks": [
-        [2, "Indicators s2.1.ai & s2.2.ai, S2.6"],
-        [76, "Jurisdictions"],
-        [77, "ACT"],
-        [98, "NSW"],
-        [157, "QLD"],
-        [215, "SA"],
-        [262, "TAS"],
-        [277, "Tier 1 Retailers"],
-        [278, "National"],
-        [288, "ACT"],
-        [296, "NSW"],
-        [304, "QLD"],
-        [312, "SA"],
-        [319, "TAS"]
+        [
+          2,
+          "Indicators s2.1.ai & s2.2.ai, S2.6"
+        ],
+        [
+          76,
+          "Jurisdictions"
+        ],
+        [
+          77,
+          "ACT"
+        ],
+        [
+          98,
+          "NSW"
+        ],
+        [
+          157,
+          "QLD"
+        ],
+        [
+          215,
+          "SA"
+        ],
+        [
+          262,
+          "TAS"
+        ],
+        [
+          277,
+          "Tier 1 Retailers"
+        ],
+        [
+          278,
+          "National"
+        ],
+        [
+          288,
+          "ACT"
+        ],
+        [
+          296,
+          "NSW"
+        ],
+        [
+          304,
+          "QLD"
+        ],
+        [
+          312,
+          "SA"
+        ],
+        [
+          319,
+          "TAS"
+        ]
       ]
     },
     {
@@ -35,20 +77,62 @@
       "rowCount": 311,
       "widestColumn": "AP",
       "blocks": [
-        [2, "Indicators s2.1.aii & s2.2.aii"],
-        [73, "Jurisdictions"],
-        [74, "ACT"],
-        [96, "NSW"],
-        [155, "QLD"],
-        [209, "SA"],
-        [254, "TAS"],
-        [265, "Tier 1 Retailers"],
-        [266, "National"],
-        [276, "ACT"],
-        [284, "NSW"],
-        [292, "QLD"],
-        [300, "SA"],
-        [307, "TAS"]
+        [
+          2,
+          "Indicators s2.1.aii & s2.2.aii"
+        ],
+        [
+          73,
+          "Jurisdictions"
+        ],
+        [
+          74,
+          "ACT"
+        ],
+        [
+          96,
+          "NSW"
+        ],
+        [
+          155,
+          "QLD"
+        ],
+        [
+          209,
+          "SA"
+        ],
+        [
+          254,
+          "TAS"
+        ],
+        [
+          265,
+          "Tier 1 Retailers"
+        ],
+        [
+          266,
+          "National"
+        ],
+        [
+          276,
+          "ACT"
+        ],
+        [
+          284,
+          "NSW"
+        ],
+        [
+          292,
+          "QLD"
+        ],
+        [
+          300,
+          "SA"
+        ],
+        [
+          307,
+          "TAS"
+        ]
       ]
     },
     {
@@ -57,20 +141,62 @@
       "rowCount": 293,
       "widestColumn": "AP",
       "blocks": [
-        [2, "Indicators s2.1.aiii & s2.2.aiii"],
-        [67, "Jurisdictions"],
-        [68, "ACT"],
-        [93, "NSW"],
-        [143, "QLD"],
-        [194, "SA"],
-        [234, "TAS"],
-        [247, "Tier 1 Retailers"],
-        [248, "National"],
-        [258, "ACT"],
-        [266, "NSW"],
-        [274, "QLD"],
-        [282, "SA"],
-        [289, "TAS"]
+        [
+          2,
+          "Indicators s2.1.aiii & s2.2.aiii"
+        ],
+        [
+          67,
+          "Jurisdictions"
+        ],
+        [
+          68,
+          "ACT"
+        ],
+        [
+          93,
+          "NSW"
+        ],
+        [
+          143,
+          "QLD"
+        ],
+        [
+          194,
+          "SA"
+        ],
+        [
+          234,
+          "TAS"
+        ],
+        [
+          247,
+          "Tier 1 Retailers"
+        ],
+        [
+          248,
+          "National"
+        ],
+        [
+          258,
+          "ACT"
+        ],
+        [
+          266,
+          "NSW"
+        ],
+        [
+          274,
+          "QLD"
+        ],
+        [
+          282,
+          "SA"
+        ],
+        [
+          289,
+          "TAS"
+        ]
       ]
     },
     {
@@ -79,20 +205,62 @@
       "rowCount": 129,
       "widestColumn": "AP",
       "blocks": [
-        [2, "Indicators s2.1.bi & s2.2.bi"],
-        [29, "Jurisdictions"],
-        [30, "ACT"],
-        [38, "NSW"],
-        [58, "QLD"],
-        [71, "SA"],
-        [87, "TAS"],
-        [90, "Tier 1 Retailers"],
-        [91, "National"],
-        [99, "ACT"],
-        [106, "NSW"],
-        [114, "QLD"],
-        [120, "SA"],
-        [127, "TAS"]
+        [
+          2,
+          "Indicators s2.1.bi & s2.2.bi"
+        ],
+        [
+          29,
+          "Jurisdictions"
+        ],
+        [
+          30,
+          "ACT"
+        ],
+        [
+          38,
+          "NSW"
+        ],
+        [
+          58,
+          "QLD"
+        ],
+        [
+          71,
+          "SA"
+        ],
+        [
+          87,
+          "TAS"
+        ],
+        [
+          90,
+          "Tier 1 Retailers"
+        ],
+        [
+          91,
+          "National"
+        ],
+        [
+          99,
+          "ACT"
+        ],
+        [
+          106,
+          "NSW"
+        ],
+        [
+          114,
+          "QLD"
+        ],
+        [
+          120,
+          "SA"
+        ],
+        [
+          127,
+          "TAS"
+        ]
       ]
     },
     {
@@ -101,14 +269,38 @@
       "rowCount": 277,
       "widestColumn": "BC",
       "blocks": [
-        [2, "Indicators s2.1 s2.2 s2.4"],
-        [3, "Q4 2023-24"],
-        [76, "Jurisdictions"],
-        [77, "ACT"],
-        [104, "NSW"],
-        [160, "QLD"],
-        [219, "SA"],
-        [265, "TAS"]
+        [
+          2,
+          "Indicators s2.1 s2.2 s2.4"
+        ],
+        [
+          3,
+          "Q4 2023-24"
+        ],
+        [
+          76,
+          "Jurisdictions"
+        ],
+        [
+          77,
+          "ACT"
+        ],
+        [
+          104,
+          "NSW"
+        ],
+        [
+          160,
+          "QLD"
+        ],
+        [
+          219,
+          "SA"
+        ],
+        [
+          265,
+          "TAS"
+        ]
       ]
     },
     {
@@ -117,14 +309,38 @@
       "rowCount": 258,
       "widestColumn": "X",
       "blocks": [
-        [2, "Indicators s3.15 & s3.17"],
-        [3, "^ From Q3 2018-19 the AER..."],
-        [72, "Jurisdictions"],
-        [73, "ACT"],
-        [90, "NSW"],
-        [147, "QLD"],
-        [204, "SA"],
-        [247, "TAS"]
+        [
+          2,
+          "Indicators s3.15 & s3.17"
+        ],
+        [
+          3,
+          "^ From Q3 2018-19 the AER..."
+        ],
+        [
+          72,
+          "Jurisdictions"
+        ],
+        [
+          73,
+          "ACT"
+        ],
+        [
+          90,
+          "NSW"
+        ],
+        [
+          147,
+          "QLD"
+        ],
+        [
+          204,
+          "SA"
+        ],
+        [
+          247,
+          "TAS"
+        ]
       ]
     },
     {
@@ -133,13 +349,34 @@
       "rowCount": 246,
       "widestColumn": "BX",
       "blocks": [
-        [2, "Indicators s3.18 & s3.19"],
-        [71, "Jurisdictions"],
-        [72, "ACT"],
-        [89, "NSW"],
-        [145, "QLD"],
-        [199, "SA"],
-        [237, "TAS"]
+        [
+          2,
+          "Indicators s3.18 & s3.19"
+        ],
+        [
+          71,
+          "Jurisdictions"
+        ],
+        [
+          72,
+          "ACT"
+        ],
+        [
+          89,
+          "NSW"
+        ],
+        [
+          145,
+          "QLD"
+        ],
+        [
+          199,
+          "SA"
+        ],
+        [
+          237,
+          "TAS"
+        ]
       ]
     },
     {
@@ -148,13 +385,34 @@
       "rowCount": 174,
       "widestColumn": "CC",
       "blocks": [
-        [2, "Indicators s3.26 to s3.28"],
-        [51, "Jurisdictions"],
-        [52, "ACT"],
-        [64, "NSW"],
-        [100, "QLD"],
-        [138, "SA"],
-        [167, "TAS"]
+        [
+          2,
+          "Indicators s3.26 to s3.28"
+        ],
+        [
+          51,
+          "Jurisdictions"
+        ],
+        [
+          52,
+          "ACT"
+        ],
+        [
+          64,
+          "NSW"
+        ],
+        [
+          100,
+          "QLD"
+        ],
+        [
+          138,
+          "SA"
+        ],
+        [
+          167,
+          "TAS"
+        ]
       ]
     }
   ],
@@ -164,6 +422,10 @@
     "A 'Jurisdictions' row is a section divider, not a jurisdiction. So is 'Tier 1 Retailers'.",
     "'Tier 1 Retailers' introduces a second pass over the same jurisdictions for a subset of retailers. That is a dimension the schema does not have, and without it the Tier 1 National block and the all-retailers National block share a key.",
     "The sheet-level cell A4 names only the FIRST block's jurisdiction. Read as the whole sheet's jurisdiction it mislabels every later block.",
-    "Widest columns run to BN, BX and CC. A fixture capped at column 40 (AN) cannot see the annual column block, which is why six sheets were refused outright on the first ingest."
+    "Widest columns run to BN, BX and CC. A fixture capped at column 40 (AN) cannot see the annual column block, which is why six sheets were refused outright on the first ingest.",
+    "A dimension can also be stated across column groups, not just per row or per sheet. 'Switch# Standard to Market' has fuel on row 3 (B3=Electricity, AJ3=Gas) and customer segment on row 4 (B4-K4=Residential, M4-V4=Small Business, X4-AG4=Large), the measure on row 5 and the quarter on row 6.",
+    "The AER mixes two spellings of a group label inside one sheet: row 4 repeats its label in every column, while row 3 writes it once and leaves the rest of the group empty. So a column's group value is the nearest label at or to its left, not a direct read.",
+    "21 of Schedule 3's 29 sheets have at least one header row whose labels are written once per column group. Measured by reading the workbook, not inferred: for that schedule this is the dominant shape rather than an edge case.",
+    "'Switching' is transposed - rows are quarters, columns are jurisdictions, and there is no retailer column at all - so it cannot be represented by this schema and is skipped by name."
   ]
 }
