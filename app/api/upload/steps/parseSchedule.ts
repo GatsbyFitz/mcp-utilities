@@ -56,6 +56,31 @@ import {
  */
 const INFERENCE_CONCURRENCY = 5;
 
+/**
+ * How long one sheet's inference may take before it is abandoned.
+ *
+ * There was no cap, and that is what a Schedule 2 re-ingest died of: the step
+ * function was killed at its 800-second limit, retried, and killed again,
+ * having written nothing and logged nothing. `inferMappings` logs only after
+ * `mapPool` resolves and `mapPool` awaits every runner, so one gateway call
+ * that accepts and then says nothing takes the whole step down and surfaces as
+ * a bare `Vercel Runtime Timeout Error` — indistinguishable from a workbook
+ * too big to parse. Exactly what `fetchFollowingRedirects` needed its per-hop
+ * cap for, one layer up.
+ *
+ * The arithmetic has to fit the step budget, not just feel generous. Sheets run
+ * in waves of `INFERENCE_CONCURRENCY`, so the worst case is
+ * `ceil(sheets / 5) x this`. Schedule 3 has 29 sheets — six waves — so 75
+ * seconds caps inference at 450s and leaves the download and the parse room
+ * inside 800s. Raising this without redoing that sum is how the cap stops
+ * being one.
+ *
+ * A sheet that trips it is reported by name, not silently dropped: the catch
+ * below degrades it to no mapping, which is the right behaviour for one bad
+ * sheet and the wrong thing to be quiet about.
+ */
+const INFERENCE_TIMEOUT_MS = 75_000;
+
 const PREVIEW_ROWS = 30;
 /** Columns scanned. AER schedules are wide but not this wide. */
 const PREVIEW_COLUMNS = 40;
@@ -154,6 +179,15 @@ export async function readSheetPreviews(blobUrl: string): Promise<SheetPreview[]
 export interface InferenceResult {
   mappings: { sheetName: string; mapping: SheetMapping }[];
   definitions: CapturedDefinition[];
+  /**
+   * Sheets inference produced nothing for, by name.
+   *
+   * Without this they vanished: a sheet with no mapping never reaches
+   * `extractAndStore`, so it is absent from both `mappings.length` and the
+   * `skipped` list, and the run reports "N data sheets" with no hint that it
+   * should have been N+1.
+   */
+  inferenceFailed: string[];
 }
 
 /** A header row the model named, or undefined when it said "not this shape". */
@@ -286,6 +320,7 @@ export async function inferMappings(
     const empty = {
       mapping: null as { sheetName: string; mapping: SheetMapping } | null,
       definitions: [] as CapturedDefinition[],
+      failed: null as string | null,
     };
     if (!preview.text.trim()) return empty;
 
@@ -295,6 +330,9 @@ export async function inferMappings(
         providerOptions: anthropicByok(SHEET_MAPPING_MODEL),
         output: Output.object({ schema: MappingSchema }),
         messages: [{ role: "user", content: prompt(schedule, preview, known) }],
+        // Bounds the call and every retry under it, so a hung request costs
+        // one sheet rather than the whole step. See INFERENCE_TIMEOUT_MS.
+        abortSignal: AbortSignal.timeout(INFERENCE_TIMEOUT_MS),
       });
 
       // Definitions first, and outside the isData gate. The sheet that states
@@ -317,7 +355,7 @@ export async function inferMappings(
       }
 
       if (!output.isData || output.metrics.length === 0) {
-        return { mapping: null, definitions: found };
+        return { mapping: null, definitions: found, failed: null };
       }
 
       const mapping = {
@@ -354,14 +392,23 @@ export async function inferMappings(
           notes: output.notes || undefined,
         },
       };
-      return { mapping, definitions: found };
+      return { mapping, definitions: found, failed: null };
     } catch (error) {
       // One unreadable sheet must not discard a workbook whose other sheets
       // parsed, so this degrades rather than aborting — the workflow-steps rule.
       // `mapPool` awaits every runner, so an unhandled throw here would sink
       // the whole workbook rather than one sheet.
-      console.warn(`[parseSchedule] sheet "${preview.name}": inference failed, skipping —`, error);
-      return empty;
+      // A timeout reads differently from a bad response and the distinction
+      // decides what to do about it, so the message says which.
+      const timedOut =
+        error instanceof Error && (error.name === "TimeoutError" || /abort/i.test(error.message));
+      console.warn(
+        `[parseSchedule] sheet "${preview.name}": inference ${
+          timedOut ? `timed out after ${INFERENCE_TIMEOUT_MS / 1000}s` : "failed"
+        }, skipping —`,
+        error
+      );
+      return { ...empty, failed: `${preview.name} (${timedOut ? "inference timed out" : "inference failed"})` };
     }
   });
 
@@ -369,11 +416,17 @@ export async function inferMappings(
     .map((r) => r.mapping)
     .filter((m): m is { sheetName: string; mapping: SheetMapping } => m !== null);
   const definitions = perSheet.flatMap((r) => r.definitions);
+  const inferenceFailed = perSheet
+    .map((r) => r.failed)
+    .filter((f): f is string => f !== null);
 
   console.log(
-    `[parseSchedule] ${mappings.length} data sheets, ${definitions.length} definitions captured`
+    `[parseSchedule] ${mappings.length} data sheets, ${definitions.length} definitions captured` +
+      (inferenceFailed.length > 0
+        ? `, ${inferenceFailed.length} sheet(s) lost to inference: ${inferenceFailed.join(", ")}`
+        : "")
   );
-  return { mappings, definitions };
+  return { mappings, definitions, inferenceFailed };
 }
 
 /**
@@ -401,6 +454,8 @@ export async function extractAndStore(
   overwritten: number;
   /** Sheets whose mapping was accepted but which yielded nothing. */
   emptySheets: string[];
+  /** Sheets inference never produced a mapping for, by name. */
+  inferenceFailed: string[];
   newMetrics: string[];
   skipped: string[];
   definitionsCaptured: number;
@@ -542,8 +597,19 @@ export async function extractAndStore(
     `[parseSchedule] ${sourceFile}: ${written} observation(s) across ${mappings.length - skipped.length} sheet(s)` +
       `, ${removed} replaced, ${newMetrics.length} new metric(s), ${skipped.length} sheet(s) skipped` +
       `, ${definitions.length} definition(s), ${definitionsChanged.length} changed` +
+      `, ${inference.inferenceFailed.length} sheet(s) lost to inference` +
       `, periods ${periodsWritten.join("/") || "none"}`
   );
+
+  // Carried through from the inference step, because a sheet with no mapping
+  // never reaches the loop above and so appears in neither `mappings.length`
+  // nor `skipped` — it simply is not mentioned.
+  if (inference.inferenceFailed.length > 0) {
+    console.warn(
+      `[parseSchedule] ${sourceFile}: no mapping was produced for ` +
+        `${inference.inferenceFailed.join(", ")} — those sheets are absent from this run entirely`
+    );
+  }
 
   // Named rather than silent, because a missing table here is invisible from
   // the data: the numbers all land and only the provenance is absent.
@@ -571,6 +637,7 @@ export async function extractAndStore(
     removed,
     overwritten,
     emptySheets,
+    inferenceFailed: inference.inferenceFailed,
     newMetrics,
     skipped,
     periods: periodsWritten,
