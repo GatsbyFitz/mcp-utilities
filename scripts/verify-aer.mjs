@@ -497,6 +497,110 @@ console.log("The annual block to the right of the quarterly one:");
 }
 
 // ---------------------------------------------------------------------------
+// A sheet can parse cleanly and still yield nothing
+// ---------------------------------------------------------------------------
+// These shapes are constructed, not observed — unlike the block fixtures,
+// which come from real workbooks. They stand for cases I can reason about
+// before meeting Schedule 3's 29 sheets, and the point of each is that
+// `mappingProblems` is *empty* while `extractRows` returns nothing: the one
+// combination that raises no error and leaves no gap to see. `extractAndStore`
+// now names such a sheet rather than counting it among the ones that parsed.
+{
+  console.log("\nsheets that parse and yield nothing");
+
+  // Every column annual. Annual columns are deliberately not a mapping
+  // failure — treating them as one cost all six of Schedule 2's main sheets —
+  // so a sheet that is *only* annual passes validation and produces no rows.
+  // Schedule 3's "SA Service Standards" is mixed, but nothing guarantees the
+  // next one is.
+  const annualOnly = sheetOf("SA Service Standards", {
+    A4: "National", B4: "Complaints", C4: "Complaints",
+    A5: "Retailer", B5: "2022-23", C5: "2023-24",
+    A6: "AGL", B6: 1200, C6: 1310,
+  }, 6);
+  const annualMapping = {
+    metricRow: 4, periodRow: 5,
+    dimensions: { retailer: "A" }, sheetDimensions: {},
+    metrics: [
+      { column: "B", raw: "Complaints", metric: "complaints" },
+      { column: "C", raw: "Complaints", metric: "complaints" },
+    ],
+  };
+  check("an all-annual sheet is not a mapping failure",
+    mappingProblems(annualOnly, annualMapping).length === 0,
+    JSON.stringify(mappingProblems(annualOnly, annualMapping)));
+  check("and yields no rows, which is why the step has to name it",
+    extractRows(annualOnly, annualMapping).length === 0,
+    JSON.stringify(extractRows(annualOnly, annualMapping)));
+
+  // Every data row an aggregate. `isAggregateLabel` refuses each one, so the
+  // sheet is read correctly and contributes nothing.
+  const totalsOnly = sheetOf("Totals", {
+    A4: "National", B4: "Complaints",
+    A5: "Retailer", B5: "Q4 2023-24",
+    A6: "Total", B6: 50, A7: "All retailers", B7: 50, A8: "Grand total", B8: 100,
+  }, 8);
+  const totalsMapping = {
+    metricRow: 4, periodRow: 5,
+    dimensions: { retailer: "A" }, sheetDimensions: {},
+    metrics: [{ column: "B", raw: "Complaints", metric: "complaints" }],
+  };
+  check("a sheet of nothing but aggregate rows yields no rows",
+    extractRows(totalsOnly, totalsMapping).length === 0,
+    JSON.stringify(extractRows(totalsOnly, totalsMapping)));
+  check("and is not reported as a broken mapping either",
+    mappingProblems(totalsOnly, totalsMapping).length === 0,
+    JSON.stringify(mappingProblems(totalsOnly, totalsMapping)));
+}
+
+// ---------------------------------------------------------------------------
+// Shapes other than stacked blocks
+// ---------------------------------------------------------------------------
+// Also constructed. Schedule 3 reports some measures with the jurisdiction in
+// a column rather than in block headers, and not every sheet puts the retailer
+// in column A.
+{
+  console.log("\nother sheet shapes");
+
+  const byColumn = sheetOf("Disconnections Resi", {
+    A3: "Retailer", B3: "State", C3: "Disconnections",
+    A4: "AGL", B4: "Victoria", C4: 1200,
+    A5: "AGL", B5: "New South Wales", C5: 2400,
+    A6: "Origin Energy", B6: "QLD", C6: 900,
+  }, 6);
+  const byColumnMapping = {
+    metricRow: 3, periodRow: 0,
+    dimensions: { retailer: "A", jurisdiction: "B" },
+    sheetDimensions: {},
+    metrics: [{ column: "C", raw: "Disconnections", metric: "disconnections" }],
+  };
+  const rows = extractRows(byColumn, byColumnMapping);
+  check("a jurisdiction column produces one row per jurisdiction",
+    rows.length === 3, JSON.stringify(rows.map((r) => r.jurisdictionRaw)));
+  check("and canonicalises the spelling the sheet used",
+    rows.map((r) => r.jurisdiction).join(",") === "VIC,NSW,QLD",
+    JSON.stringify(rows.map((r) => r.jurisdiction)));
+  check("while keeping that spelling verbatim",
+    rows[1]?.jurisdictionRaw === "New South Wales", rows[1]?.jurisdictionRaw);
+
+  // A column wins over a sheet-level cell, which is what lets one workbook
+  // mix both shapes. Asserted here because the block attribution made the
+  // sheet-level cell a *seed*, and that must not have overridden a column.
+  const withBoth = sheetOf("Disconnections Resi", {
+    A1: "Tasmania",
+    A3: "Retailer", B3: "State", C3: "Disconnections",
+    A4: "AGL", B4: "Victoria", C4: 1200,
+  }, 4);
+  const bothMapping = {
+    ...byColumnMapping,
+    sheetDimensions: { jurisdiction: "A1" },
+  };
+  check("a jurisdiction column still beats a sheet-level cell",
+    extractRows(withBoth, bothMapping)[0]?.jurisdiction === "VIC",
+    JSON.stringify(extractRows(withBoth, bothMapping)[0]));
+}
+
+// ---------------------------------------------------------------------------
 // The run says what did not survive
 // ---------------------------------------------------------------------------
 // `replaceScheduleRows` inserts ON CONFLICT DO UPDATE, so a collision looks
