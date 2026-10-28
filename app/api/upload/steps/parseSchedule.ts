@@ -190,6 +190,34 @@ export interface InferenceResult {
   inferenceFailed: string[];
 }
 
+/** Whether the SDK gave up because a signal fired rather than because of a reply. */
+function isTimeout(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.name === "TimeoutError" || error.name === "AbortError" || /abort/i.test(error.message);
+}
+
+/**
+ * The provider's own account of a refusal, as a short string, or null.
+ *
+ * Reads the shape the AI SDK's `APICallError` carries and the `cause` chain an
+ * abort wraps, because the useful sentence is usually two levels down and a
+ * bare `error.message` at the top says only that something was aborted.
+ */
+function providerDetail(error: unknown): string | null {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current && !seen.has(current); depth++) {
+    seen.add(current);
+    const e = current as { statusCode?: number; responseBody?: string; message?: string; cause?: unknown };
+    if (typeof e.statusCode === "number") {
+      const body = typeof e.responseBody === "string" ? ` ${e.responseBody.slice(0, 300)}` : "";
+      return `HTTP ${e.statusCode}${body}`.trim();
+    }
+    current = e.cause;
+  }
+  return null;
+}
+
 /** A header row the model named, or undefined when it said "not this shape". */
 const positiveRow = (n: number): number | undefined =>
   Number.isInteger(n) && n > 0 ? n : undefined;
@@ -333,6 +361,21 @@ export async function inferMappings(
         // Bounds the call and every retry under it, so a hung request costs
         // one sheet rather than the whole step. See INFERENCE_TIMEOUT_MS.
         abortSignal: AbortSignal.timeout(INFERENCE_TIMEOUT_MS),
+        // One retry, not the SDK's default two.
+        //
+        // The default turned every failure into the same useless error. The
+        // SDK retries with exponential backoff, so a request the provider
+        // *rejected* was slept on and retried until the abort signal fired
+        // mid-backoff — and what reached the catch below was
+        // `AbortError: Delay was aborted`, which says only that my own cap
+        // fired. All sixteen sheets of a workbook reported "inference timed
+        // out" when not one of them had timed out: they had been refused, and
+        // the refusal was retried into silence.
+        //
+        // Two attempts still absorb a transient 429 or 503. What they no
+        // longer do is bury a 401 or a 400 under enough backoff to look like
+        // slowness, which is the error that actually needs reading.
+        maxRetries: 1,
       });
 
       // Definitions first, and outside the isData gate. The sheet that states
@@ -398,17 +441,22 @@ export async function inferMappings(
       // parsed, so this degrades rather than aborting — the workflow-steps rule.
       // `mapPool` awaits every runner, so an unhandled throw here would sink
       // the whole workbook rather than one sheet.
-      // A timeout reads differently from a bad response and the distinction
-      // decides what to do about it, so the message says which.
-      const timedOut =
-        error instanceof Error && (error.name === "TimeoutError" || /abort/i.test(error.message));
-      console.warn(
-        `[parseSchedule] sheet "${preview.name}": inference ${
-          timedOut ? `timed out after ${INFERENCE_TIMEOUT_MS / 1000}s` : "failed"
-        }, skipping —`,
-        error
-      );
-      return { ...empty, failed: `${preview.name} (${timedOut ? "inference timed out" : "inference failed"})` };
+      // What the provider said, where it said anything. `describeSyncError`
+      // makes the same argument for the compliance route: an upstream that
+      // diagnoses itself is the most useful sentence available, and throwing
+      // it away cost a bisection there and sixteen mislabelled sheets here.
+      const detail = providerDetail(error);
+      // A cap that fired and a request that was refused need different
+      // responses, so the message must not call the second one a timeout. It
+      // did, because the SDK's retry backoff was what my signal interrupted.
+      const timedOut = isTimeout(error) && detail === null;
+      const what = timedOut
+        ? `timed out after ${INFERENCE_TIMEOUT_MS / 1000}s`
+        : detail
+          ? `was refused: ${detail}`
+          : "failed";
+      console.warn(`[parseSchedule] sheet "${preview.name}": inference ${what}, skipping —`, error);
+      return { ...empty, failed: `${preview.name} (inference ${timedOut ? "timed out" : detail ?? "failed"})` };
     }
   });
 
