@@ -26,6 +26,7 @@ import {
   knownMetrics,
   recordDefinitions,
   recordMetrics,
+  recordSheetMappings,
   replaceScheduleRows,
 } from "@/lib/aerPerformanceStore";
 
@@ -367,6 +368,10 @@ export async function extractAndStore(
 ): Promise<{
   written: number;
   removed: number;
+  /** Observations read but not stored, because another took their key. */
+  overwritten: number;
+  /** Sheets whose mapping was accepted but which yielded nothing. */
+  emptySheets: string[];
   newMetrics: string[];
   skipped: string[];
   definitionsCaptured: number;
@@ -392,6 +397,13 @@ export async function extractAndStore(
   const observations: AerObservationRow[] = [];
   const seenMetrics: { metric: string; raw: string }[] = [];
   const skipped: string[] = [];
+  // Per sheet, because "29 sheets parsed" can hide ten that contributed
+  // nothing. A sheet whose mapping is accepted and which then yields no rows
+  // is the silent case: every column dropped as annual, every row refused as
+  // an aggregate, or a retailer column pointing somewhere empty. None of
+  // those raise, and none of them show up in `skipped` — that list is only
+  // for mappings that failed validation.
+  const perSheetRows: { sheetName: string; rows: number }[] = [];
 
   for (const { sheetName, mapping } of mappings) {
     const worksheet = workbook.getWorksheet(sheetName);
@@ -407,6 +419,8 @@ export async function extractAndStore(
       skipped.push(`${sheetName} (${problems[0]})`);
       continue;
     }
+
+    const before = observations.length;
 
     for (const row of extractRows(sheet, mapping)) {
       // The column's own quarter where the sheet gives one, the release
@@ -443,8 +457,26 @@ export async function extractAndStore(
         cellRef: row.cellRef,
       });
     }
+    perSheetRows.push({ sheetName, rows: observations.length - before });
     for (const m of mapping.metrics) seenMetrics.push({ metric: m.metric, raw: m.raw });
   }
+
+  // Named individually, not counted. A sheet that parsed and produced nothing
+  // is either a sheet this app cannot read or one that genuinely holds no
+  // observations, and only a person looking at the workbook can tell which —
+  // so the name has to reach them.
+  const emptySheets = perSheetRows.filter((s) => s.rows === 0).map((s) => s.sheetName);
+  if (emptySheets.length > 0) {
+    console.warn(
+      `[parseSchedule] ${sourceFile}: ${emptySheets.length} sheet(s) parsed but produced no ` +
+        `observations: ${emptySheets.join(", ")}. Their mappings were accepted, so this is not ` +
+        "a rejected sheet — every candidate column or row was dropped."
+    );
+  }
+  console.log(
+    `[parseSchedule] ${sourceFile} per sheet: ` +
+      perSheetRows.map((s) => `${s.sheetName}=${s.rows}`).join(", ")
+  );
 
   if (observations.length > MAX_OBSERVATIONS_PER_INGEST) {
     throw new FatalError(
@@ -466,12 +498,16 @@ export async function extractAndStore(
   // one period while inserting five would leave the other four to accumulate
   // whatever an earlier release had put there.
   const periodsWritten = [...new Set(observations.map((o) => o.periodLabel))].sort();
-  const { written, removed } = await replaceScheduleRows(
+  const { written, removed, overwritten, collisions } = await replaceScheduleRows(
     schedule,
     periodsWritten,
-    observations,
-    mappings
+    observations
   );
+
+  // Once per sheet, not once per observation. The previous shape put the whole
+  // workbook's mappings on every row and filled the database; see
+  // db/aer_sheet_mappings.sql.
+  const mappingsRecorded = await recordSheetMappings(schedule, sourceFile, mappings);
 
   console.log(
     `[parseSchedule] ${sourceFile}: ${written} observation(s) across ${mappings.length - skipped.length} sheet(s)` +
@@ -480,9 +516,32 @@ export async function extractAndStore(
       `, periods ${periodsWritten.join("/") || "none"}`
   );
 
+  // Named rather than silent, because a missing table here is invisible from
+  // the data: the numbers all land and only the provenance is absent.
+  if (mappingsRecorded.missingTable) {
+    console.warn(
+      `[parseSchedule] ${sourceFile}: column mappings not recorded — ` +
+        "run db/aer_sheet_mappings.sql against the database"
+    );
+  }
+
+  // Said separately and loudly, because it is the one number here that means
+  // data did not survive. A mapping can send two columns to one observation
+  // key, and Postgres resolves that by keeping the later one — so this is the
+  // difference between what was read and what exists.
+  if (overwritten > 0) {
+    console.warn(
+      `[parseSchedule] ${sourceFile}: ${overwritten} observation(s) overwrote another and are NOT ` +
+        `stored — two columns or two sheets map to one observation key. ` +
+        `First few: ${collisions.join("; ")}`
+    );
+  }
+
   return {
     written,
     removed,
+    overwritten,
+    emptySheets,
     newMetrics,
     skipped,
     periods: periodsWritten,

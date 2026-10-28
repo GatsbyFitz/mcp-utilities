@@ -153,6 +153,41 @@ console.log("\nSQL aliases Postgres will not give back as written:");
   }
 }
 
+// ---------------------------------------------------------------------------
+// The mapping is not stored per observation
+// ---------------------------------------------------------------------------
+// It was, and it held the whole workbook's mappings rather than the row's own
+// sheet, so every one of 45,876 rows carried all fourteen. That filled the
+// 1 GB Neon project and the next ingest died on "could not extend file". A
+// mapping belongs to a sheet; re-adding the column would refill the database
+// the same way, and it would do it silently while every number still landed.
+{
+  console.log("\nWhere the column mappings live:");
+
+  const perf = fs.readFileSync(new URL("../db/aer_performance.sql", import.meta.url), "utf8");
+  const create = perf.match(/CREATE TABLE IF NOT EXISTS aer_performance \(([\s\S]*?)\n\);/);
+  const body = create ? create[1].replace(/--[^\n]*/g, "") : "";
+  if (create && !/\bmapping\b/.test(body)) {
+    pass("aer_performance has no per-row mapping column");
+  } else {
+    fail(
+      create ? "aer_performance still declares a mapping column" : "could not find the CREATE TABLE",
+      "A mapping belongs to a sheet. Store it in aer_sheet_mappings, joined on " +
+        "(source_file, sheet_name) — both are already on every observation."
+    );
+  }
+
+  const sheets = fs.readFileSync(new URL("../db/aer_sheet_mappings.sql", import.meta.url), "utf8");
+  if (/CREATE UNIQUE INDEX[\s\S]*?aer_sheet_mappings \(source_file, sheet_name\)/.test(sheets)) {
+    pass("and aer_sheet_mappings keeps one mapping per sheet");
+  } else {
+    fail(
+      "aer_sheet_mappings has no unique index on (source_file, sheet_name)",
+      "Without it a re-ingest accumulates a copy per run, which is the problem again."
+    );
+  }
+}
+
 console.log(
   failed ? "\nSome AER projection checks FAILED." : "\nAll AER projection checks passed."
 );

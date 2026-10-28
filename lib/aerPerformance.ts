@@ -75,6 +75,15 @@ export interface AerMetric {
 export function canonicalMetric(header: string): string {
   return header
     .toLowerCase()
+    // `%` is a unit, not punctuation. Stripped along with the rest of it,
+    // "Electricity Residential Contracts Deemed" and "… Contracts % Deemed"
+    // became one key — so two columns of one sheet wrote the same observation
+    // key, `aer_performance_observation_idx` kept the later, and a share
+    // overwrote a count: a ratio sitting where a customer count belonged, in
+    // different units from the series it replaced, with no gap to see.
+    // Spelled out instead, so the two keys differ and both columns survive.
+    // Only headers carrying a `%` change key; every other key is unaffected.
+    .replace(/%/g, " pct ")
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "")
     .slice(0, 120);
@@ -170,6 +179,158 @@ export function normalizePeriodLabel(raw: string): string | null {
     return periodBounds(label) ? label : null;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Counting what was actually stored
+// ---------------------------------------------------------------------------
+// `replaceScheduleRows` inserts `ON CONFLICT DO UPDATE`, so two rows that
+// share an observation key resolve themselves: the later overwrites the
+// earlier, one statement affects one row, and nothing raises. It then
+// reported `rows.length` as the number written, which is the number
+// *attempted* — a count that cannot be wrong in the direction that matters,
+// because it never looks.
+//
+// That is how 11,910 observations went missing from a Schedule 2 ingest
+// without a single error: the step said 57,786 written and the table held
+// 45,876. The gap was only visible by reading those two numbers side by side
+// and noticing, which is not a mechanism.
+//
+// `mappingProblems` now refuses two columns of one sheet that claim the same
+// metric, so the known cause is caught before anything is written. This is
+// the backstop for the unknown ones — above all a collision *between* sheets,
+// which no single sheet's mapping can see.
+
+/**
+ * The key `aer_performance_observation_idx` enforces, rebuilt here so a
+ * collision can be counted before Postgres quietly resolves it.
+ *
+ * Must mirror the index exactly, including `COALESCE(…, '')` on the three
+ * nullable dimensions — a key that differs from the index's would report
+ * collisions that will not happen, or miss ones that will.
+ */
+export function observationKey(row: {
+  schedule: number;
+  periodLabel: string;
+  retailer: string;
+  metric: string;
+  jurisdiction?: string | null;
+  fuel?: string | null;
+  customerType?: string | null;
+}): string {
+  return [
+    row.schedule,
+    row.periodLabel,
+    row.retailer,
+    row.metric,
+    row.jurisdiction ?? "",
+    row.fuel ?? "",
+    row.customerType ?? "",
+  ].join("\u0000");
+}
+
+export interface ObservationCollisions {
+  /** Rows that will exist afterwards. The honest "written". */
+  distinct: number;
+  /** Rows that will overwrite another. Should be zero. */
+  overwritten: number;
+  /** A few of them, named well enough to find the columns responsible. */
+  examples: string[];
+}
+
+export function observationCollisions(
+  rows: {
+    schedule: number;
+    periodLabel: string;
+    retailer: string;
+    metric: string;
+    jurisdiction?: string | null;
+    fuel?: string | null;
+    customerType?: string | null;
+    sheetName?: string;
+    cellRef?: string;
+  }[]
+): ObservationCollisions {
+  const firstSeen = new Map<string, string>();
+  const examples: string[] = [];
+  let overwritten = 0;
+
+  for (const row of rows) {
+    const key = observationKey(row);
+    const where = `${row.sheetName ?? "?"}!${row.cellRef ?? "?"}`;
+    const prior = firstSeen.get(key);
+    if (prior === undefined) {
+      firstSeen.set(key, where);
+      continue;
+    }
+    overwritten++;
+    // Capped, because a wrong mapping produces thousands of these and the
+    // first few are enough to find the columns. The count is the measurement;
+    // the examples are the lead.
+    if (examples.length < MAX_COLLISION_EXAMPLES) {
+      examples.push(
+        `${row.retailer}/${row.metric}/${row.jurisdiction ?? "-"}/${row.periodLabel}: ` +
+          `${where} overwrites ${prior}`
+      );
+    }
+  }
+
+  return { distinct: firstSeen.size, overwritten, examples };
+}
+
+const MAX_COLLISION_EXAMPLES = 5;
+
+// ---------------------------------------------------------------------------
+// Totals that do not double-count
+// ---------------------------------------------------------------------------
+// `NATIONAL` is a jurisdiction the AER reports against, not a sum of the
+// others — see the comment on `JURISDICTIONS` in lib/aerDimensions.ts. The
+// consequence lands here: a match set holding both the national figure and the
+// per-jurisdiction figures sums to roughly double, because the national row
+// covers customers the jurisdiction rows do not (Victorian retail reports to
+// the Essential Services Commission, so there is no VIC block to add).
+//
+// That is the worst shape of error available to this tool. A split series
+// reads low and shows up as a gap; this reads high and shows up as nothing at
+// all, carrying the exactness the tool advertises in its own description.
+//
+// So there is no single total in that case. Both halves are reported instead,
+// which loses no information and makes the reason visible, rather than a
+// number that is quietly wrong or a number quietly withheld.
+//
+// Pure, and separate from the query that counts the rows, so the decision is
+// checkable by `pnpm verify:aer` with no database.
+
+export interface ScopeTotals {
+  /** The one meaningful total, or null when there is not one. */
+  totalValue: number | null;
+  /** The matched national rows alone. Null when none matched. */
+  nationalValue: number | null;
+  /** The matched per-jurisdiction rows alone. Null when none matched. */
+  subNationalValue: number | null;
+  /** True when both halves matched, which is when `totalValue` is null. */
+  scopesMixed: boolean;
+}
+
+export function scopeTotals(counts: {
+  totalCount: number;
+  nationalCount: number;
+  totalValue: number | null;
+  nationalValue: number | null;
+  subNationalValue: number | null;
+}): ScopeTotals {
+  const { totalCount, nationalCount } = counts;
+  const hasNational = nationalCount > 0;
+  const hasSubNational = nationalCount < totalCount;
+  const scopesMixed = hasNational && hasSubNational;
+  return {
+    // Zero rather than null on an empty match set: no rows is a total of
+    // nothing, which is a different statement from "a total would mislead".
+    totalValue: scopesMixed ? null : counts.totalValue ?? 0,
+    nationalValue: hasNational ? counts.nationalValue ?? 0 : null,
+    subNationalValue: hasSubNational ? counts.subNationalValue ?? 0 : null,
+    scopesMixed,
+  };
 }
 
 /** Observations stored per ingest. A guard, not a real limit. */
