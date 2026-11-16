@@ -352,6 +352,7 @@ export async function inferMappings(
     };
     if (!preview.text.trim()) return empty;
 
+    const startedAt = Date.now();
     try {
       const { output } = await generateText({
         model: SHEET_MAPPING_MODEL,
@@ -361,21 +362,22 @@ export async function inferMappings(
         // Bounds the call and every retry under it, so a hung request costs
         // one sheet rather than the whole step. See INFERENCE_TIMEOUT_MS.
         abortSignal: AbortSignal.timeout(INFERENCE_TIMEOUT_MS),
-        // One retry, not the SDK's default two.
+        // No SDK retry while the latency of a single attempt is unknown.
         //
-        // The default turned every failure into the same useless error. The
-        // SDK retries with exponential backoff, so a request the provider
-        // *rejected* was slept on and retried until the abort signal fired
-        // mid-backoff — and what reached the catch below was
-        // `AbortError: Delay was aborted`, which says only that my own cap
-        // fired. All sixteen sheets of a workbook reported "inference timed
-        // out" when not one of them had timed out: they had been refused, and
-        // the refusal was retried into silence.
+        // Three readings of this failure have now been wrong, and each was
+        // wrong because the error had been through a retry. With one retry
+        // left, every sheet still reported "timed out after 75s" with
+        // `AbortError: Delay was aborted` and no status code anywhere in the
+        // cause chain — so what the abort interrupted was a backoff, and the
+        // attempt *before* it had already consumed ~73 of the 75 seconds. A
+        // retried error cannot tell you how long one attempt takes or what it
+        // said, which are the only two facts that matter here.
         //
-        // Two attempts still absorb a transient 429 or 503. What they no
-        // longer do is bury a 401 or a 400 under enough backoff to look like
-        // slowness, which is the error that actually needs reading.
-        maxRetries: 1,
+        // So: one attempt, its duration logged either way. A transient 429 is
+        // worth absorbing but not at the price of never learning this, and the
+        // retry goes back once the latency is known and the cap is sized from
+        // it rather than guessed.
+        maxRetries: 0,
       });
 
       // Definitions first, and outside the isData gate. The sheet that states
@@ -435,6 +437,11 @@ export async function inferMappings(
           notes: output.notes || undefined,
         },
       };
+      // Logged on success too: sizing a cap needs the distribution, not just
+      // the failures, and this is the only place the number exists.
+      console.log(
+        `[parseSchedule] sheet "${preview.name}": inference ok in ${Date.now() - startedAt}ms`
+      );
       return { mapping, definitions: found, failed: null };
     } catch (error) {
       // One unreadable sheet must not discard a workbook whose other sheets
@@ -455,7 +462,11 @@ export async function inferMappings(
         : detail
           ? `was refused: ${detail}`
           : "failed";
-      console.warn(`[parseSchedule] sheet "${preview.name}": inference ${what}, skipping —`, error);
+      console.warn(
+        `[parseSchedule] sheet "${preview.name}": inference ${what} after ` +
+          `${Date.now() - startedAt}ms, skipping —`,
+        error
+      );
       return { ...empty, failed: `${preview.name} (inference ${timedOut ? "timed out" : detail ?? "failed"})` };
     }
   });
