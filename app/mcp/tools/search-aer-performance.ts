@@ -89,7 +89,10 @@ export function registerSearchAerPerformanceTool(server: McpServer): void {
         "within a single metric, and within one jurisdiction scope: the AER " +
         "reports a National figure alongside the per-jurisdiction ones and " +
         "it is not their sum, so a total over both is a double count and is " +
-        "reported as two figures rather than one. Filter `jurisdiction` " +
+        "reported separately rather than as one figure. Some rows also carry " +
+        "no jurisdiction at all, which is a third scope and may itself be a " +
+        "national figure the sheet did not label, so it is never folded into " +
+        "the others. Filter `jurisdiction` " +
         "(\"National\", or a state) when you want a single total. For " +
         "enforcement actions and penalties use " +
         "search_compliance; for what the rules require use search_docs.",
@@ -137,6 +140,7 @@ export function registerSearchAerPerformanceTool(server: McpServer): void {
               totalValue: 0,
               nationalValue: null,
               subNationalValue: null,
+              unknownValue: null,
               scopesMixed: false,
               facets,
             },
@@ -160,10 +164,26 @@ export function registerSearchAerPerformanceTool(server: McpServer): void {
         const total = !metric
           ? " (no total shown: a total across different metrics would be meaningless)"
           : result.scopesMixed
-            ? ` (no single total: these rows mix the National figure with per-jurisdiction ` +
-              `figures, and National is not their sum, so adding them would double-count. ` +
-              `National alone: ${formatValue(result.nationalValue ?? 0)}. Jurisdictions alone: ` +
-              `${formatValue(result.subNationalValue ?? 0)}. Filter by jurisdiction for one total.)`
+            ? ` (no single total: these rows cover more than one jurisdiction scope, and ` +
+              `adding them would double-count. ` +
+              [
+                result.nationalValue !== null
+                  ? `National alone: ${formatValue(result.nationalValue)}`
+                  : null,
+                result.subNationalValue !== null
+                  ? `Jurisdictions alone: ${formatValue(result.subNationalValue)}`
+                  : null,
+                // Named rather than folded in, because a row with no
+                // jurisdiction may be the national figure for its sheet — on
+                // some schedules it is — and a reader has to see that it was
+                // neither counted as national nor as a state.
+                result.unknownValue !== null
+                  ? `No jurisdiction recorded: ${formatValue(result.unknownValue)}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(". ") +
+              `. Filter by jurisdiction for one total.)`
             : `, totalling ${formatValue(result.totalValue ?? 0)}`;
 
         return {
@@ -182,6 +202,7 @@ export function registerSearchAerPerformanceTool(server: McpServer): void {
             totalValue: metric ? result.totalValue : null,
             nationalValue: metric ? result.nationalValue : null,
             subNationalValue: metric ? result.subNationalValue : null,
+            unknownValue: metric ? result.unknownValue : null,
             scopesMixed: result.scopesMixed,
             truncated: result.truncated,
             facets,
