@@ -829,6 +829,103 @@ console.log("The annual block to the right of the quarterly one:");
 }
 
 // ---------------------------------------------------------------------------
+// The first block names its own scope, and the sheet is read for it
+// ---------------------------------------------------------------------------
+// Observed in both workbooks, read with ExcelJS from the files themselves.
+// The header bands differ in the order of the sheet-level cells and agree on
+// where the first block's scope label sits:
+//
+//   Schedule 2, Res Elec Cust#s & Mkt Contr
+//     A3 = Q4 2022-23 to Q4 2023-24   B3 = Electricity   C3 = Residential
+//     A4 = National                   B4 = Customer numbers ...
+//     A5 = Retailer                   B5 = Q4 2022-23 ...
+//
+//   Schedule 3, Disconnections Resi
+//     A3 = Q4 2022-23 to Q4 2023-24   B3 = Residential   C3 = Electricity
+//     A4 = National                   B4 = Number of residential customers ...
+//     A5 = Retailer                   B5 = Q4 2022-23 ...
+//
+// `inferMappings` reported A4 as `jurisdictionCell` for the first and not for
+// the second, and that one omission is the whole difference: Schedule 3's
+// first block stored a null jurisdiction, so its national figures sat in no
+// scope at all. Reading the cell directly is not a guess about what an
+// unlabelled block means — it reads what the sheet says, in the one place both
+// schedules say it, and only when the text is really a jurisdiction.
+{
+  console.log("\nthe first block's own label");
+
+  const band = {
+    A3: "Q4 2022-23 to Q4 2023-24", B3: "Residential", C3: "Electricity",
+    A4: "National", B4: "Number of residential customers disconnected",
+    A5: "Retailer", B5: "Q4 2023-24",
+    A6: "AGL", B6: 1320,
+  };
+  const sheet = sheetOf("Disconnections Resi", band, 6);
+  const mapping = {
+    metricRow: 4, periodRow: 5,
+    dimensions: { retailer: "A" },
+    // Exactly what the model returned for this sheet: the fuel and segment
+    // cells, and no jurisdiction cell.
+    sheetDimensions: { customerType: "B3", fuel: "C3" },
+    metrics: [{
+      column: "B",
+      raw: "Number of residential customers disconnected",
+      metric: "number_of_residential_customers_disconnected",
+    }],
+  };
+
+  const rows = extractRows(sheet, mapping);
+  check("the national figure is read with a jurisdiction, not a null",
+    rows[0]?.jurisdiction === "NATIONAL", JSON.stringify(rows[0]));
+  check("and keeps the sheet's own spelling",
+    rows[0]?.jurisdictionRaw === "National", rows[0]?.jurisdictionRaw);
+  check("while the value still comes from the cell",
+    rows[0]?.value === 1320, JSON.stringify(rows[0]?.value));
+
+  // A mapping that names the cell must still win: this only fills a null.
+  const named = {
+    ...mapping,
+    sheetDimensions: { ...mapping.sheetDimensions, jurisdiction: "A4" },
+  };
+  check("a mapping that names the cell is unaffected",
+    extractRows(sheet, named)[0]?.jurisdiction === "NATIONAL",
+    JSON.stringify(extractRows(sheet, named)[0]?.jurisdiction));
+
+  // The guard that keeps this from being a guess: the cell has to hold a
+  // jurisdiction. On a sheet whose metricRow label is not one, nothing is
+  // invented — and `A5` on these very sheets holds "Retailer".
+  const notAJurisdiction = sheetOf("Complaints All", {
+    A4: "Retailer", B4: "Complaints",
+    A5: "Retailer", B5: "Q4 2023-24",
+    A6: "AGL", B6: 42,
+  }, 6);
+  check("a metricRow label that is not a jurisdiction is not treated as one",
+    extractRows(notAJurisdiction, {
+      ...mapping,
+      sheetDimensions: {},
+      metrics: [{ column: "B", raw: "Complaints", metric: "complaints" }],
+    })[0]?.jurisdiction === null,
+    JSON.stringify(extractRows(notAJurisdiction, {
+      ...mapping, sheetDimensions: {},
+      metrics: [{ column: "B", raw: "Complaints", metric: "complaints" }],
+    })[0]));
+
+  // And the blocks below still win over the seed, which is the whole point of
+  // the seed being only a seed.
+  const stacked = sheetOf("Disconnections Resi", {
+    ...band,
+    A7: "Jurisdictions",
+    A8: "NSW",
+    A9: "AGL", B9: 740,
+  }, 9);
+  const stackedRows = extractRows(stacked, mapping);
+  const byJurisdiction = new Map(stackedRows.map((r) => [r.jurisdiction, r.value]));
+  check("the national seed does not leak into the jurisdiction blocks",
+    byJurisdiction.get("NATIONAL") === 1320 && byJurisdiction.get("NSW") === 740,
+    JSON.stringify([...byJurisdiction]));
+}
+
+// ---------------------------------------------------------------------------
 // A row with no jurisdiction is a third scope, not a sub-national one
 // ---------------------------------------------------------------------------
 // Observed on the first Schedule 3 ingest. That workbook's sheets put the

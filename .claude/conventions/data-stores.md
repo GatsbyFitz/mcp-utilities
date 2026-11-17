@@ -101,7 +101,25 @@ AGL residential disconnections, 2023-24 Q4
 
 The tool reported `total=2640, mixed=false` — exactly double, as one confident number, with the split that exists to prevent this never firing. So `scopeTotals` counts three scopes and refuses a single total whenever more than one is present. The test is "more than one scope" rather than "national and sub-national", because an unlabelled row *can be either*, and a row that might be the total of the others cannot be added to them; refusing is the only answer that is right whichever it turns out to be. The unknown half is reported under its own name, so a reader sees it was counted as neither.
 
-Note the direction, which is the dangerous one: Schedule 2 reads correctly because its first block says "National" and lands in the national scope. Nothing in the data distinguished the two cases — only the label did, and it was the *absence* of a label that broke it.
+**And the cause was not what the symptom suggested.** Read from the file, Schedule 3's sheet states its scope in exactly the place Schedule 2's does:
+
+```
+Schedule 2, Res Elec Cust#s & Mkt Contr
+  A3 = Q4 2022-23 to Q4 2023-24   B3 = Electricity   C3 = Residential
+  A4 = National                   B4 = Customer numbers ...
+  A5 = Retailer                   B5 = Q4 2022-23 ...
+
+Schedule 3, Disconnections Resi
+  A3 = Q4 2022-23 to Q4 2023-24   B3 = Residential   C3 = Electricity
+  A4 = National                   B4 = Number of residential customers ...
+  A5 = Retailer                   B5 = Q4 2022-23 ...
+```
+
+`A4` says "National" on both. The whole difference is that `inferMappings` reported that cell as `jurisdictionCell` for one workbook and omitted it for the other — the sheets agree and the mapping of them did not. Note the sheet-level cells are in the *opposite order* between the two, which is the kind of drift that makes a per-sheet mapping necessary in the first place.
+
+So `extractRows` reads `(metricRow, retailer column)` itself when the mapping does not name a jurisdiction cell. That is not an inference about what an unlabelled block means: it reads what the sheet says, in the one place both schedules say it, and uses it **only if the text canonicalises to a real jurisdiction** — `A5` holds "Retailer" on these same sheets and resolves to nothing, which is the behaviour wanted. It only ever fills a null, so a mapping that names the cell still wins and nothing that reads correctly today changes.
+
+The general shape is worth keeping: a dimension the sheet states plainly should be read from the sheet, not depended on a model to relay. The model is needed for *which column means what*, which drifts; `A4` does not drift, and a fallback that reads it costs nothing and removes a whole class of omission.
 
 So the cost is exact rather than hypothetical — a sum over both scopes returns *precisely* double, 3,037,654 for that quarter. `scopeTotals` in [lib/aerPerformance.ts](../../lib/aerPerformance.ts) is where it is paid: `queryAer` splits the same window pass by scope and reports **no single total** when both are present, giving both halves and the reason instead. Note the direction: every other failure described here reads low and shows as a gap, while this one reads high and shows as nothing at all. It is pure, so `pnpm verify:aer` pins it without a database.
 

@@ -18,7 +18,11 @@
 // half that has to be exactly right is verified with a plain object and no
 // network, credentials or model in the loop.
 
-import { blockLabelKind, canonicalDimensions } from "@/lib/aerDimensions";
+import {
+  blockLabelKind,
+  canonicalDimensions,
+  canonicalJurisdiction,
+} from "@/lib/aerDimensions";
 import { isAnnualPeriodLabel, normalizePeriodLabel } from "@/lib/aerPerformance";
 
 /** The minimum a sheet has to offer. Adapted from ExcelJS at the call site. */
@@ -447,7 +451,41 @@ export function extractRows(sheet: SheetLike, mapping: SheetMapping): Observatio
     if (!parsed) return null;
     return text(sheet.cell(parsed.row, parsed.column)) || null;
   };
-  const sheetJurisdiction = sheetDim(mapping.sheetDimensions?.jurisdiction);
+  // ---------------------------------------------------------------------
+  // Where the first block says what it is
+  // ---------------------------------------------------------------------
+  // The first block of a stacked sheet names its own scope at
+  // `(metricRow, retailer column)` — `A4` in both schedules looked at:
+  //
+  //   Schedule 2, Res Elec Cust#s & Mkt Contr   A4 = National
+  //   Schedule 3, Disconnections Resi           A4 = National
+  //
+  // `inferMappings` reported that cell as `jurisdictionCell` for Schedule 2
+  // and did not for Schedule 3, which is the whole difference between those
+  // two workbooks here. Left null, every row of the first block stored a null
+  // jurisdiction while the blocks below it stored real codes — so the national
+  // figure sat in neither scope, `jurisdiction: "National"` matched nothing,
+  // and a sum over the lot came back exactly double (1,320 at
+  // `Disconnections Resi!F8` plus the 1,320 its NSW, SA and QLD blocks make).
+  //
+  // So the cell is read directly when the mapping did not name it. This is not
+  // an inference about what an unlabelled block means: it reads what the sheet
+  // says, in the one place both schedules say it, and **uses it only if it
+  // canonicalises to a real jurisdiction**. `A5` holds "Retailer" on these
+  // same sheets and resolves to nothing, which is exactly the behaviour
+  // wanted — a cell that is not a jurisdiction is not treated as one.
+  //
+  // It only ever fills a null. A mapping that names the cell still wins, so
+  // nothing that reads correctly today changes.
+  const statedJurisdiction = (): string | null => {
+    const column = mapping.dimensions?.retailer;
+    if (!column || !COLUMN.test(column) || mapping.metricRow < 1) return null;
+    const label = text(sheet.cell(mapping.metricRow, column));
+    if (!label) return null;
+    return canonicalJurisdiction(label) ? label : null;
+  };
+  const sheetJurisdiction =
+    sheetDim(mapping.sheetDimensions?.jurisdiction) ?? statedJurisdiction();
   const sheetFuel = sheetDim(mapping.sheetDimensions?.fuel);
   const sheetCustomerType = sheetDim(mapping.sheetDimensions?.customerType);
 
