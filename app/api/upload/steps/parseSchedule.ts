@@ -75,6 +75,22 @@ const INFERENCE_CONCURRENCY = 5;
  * inside 800s. Raising this without redoing that sum is how the cap stops
  * being one.
  *
+ * Measured, now that one attempt is timed rather than inferred from a retry:
+ * a Schedule 2 sheet infers in **8–16 seconds**, the widest (`Expired -
+ * Changed benefits`, 67 columns) at 16.3s. So the cap sits about four and a
+ * half times above the slowest real call, which is the headroom a cap on
+ * silence wants — wide enough that a working call never trips it, narrow
+ * enough that a dead one does not eat the step.
+ *
+ * That measurement also closed the question this cap was added for. Inference
+ * failed on every run for a stretch, with every sheet hitting the full 75s,
+ * and two explanations were written down and both were wrong: that the prompt
+ * had grown too large, and that the calls were being refused. Neither. The
+ * same prompt and the same key now return in 8–16s, so the condition was
+ * transient and upstream. Worth remembering before rewriting anything the
+ * next time this looks structural: **three runs failing identically is not
+ * yet evidence of a cause.**
+ *
  * A sheet that trips it is reported by name, not silently dropped: the catch
  * below degrades it to no mapping, which is the right behaviour for one bad
  * sheet and the wrong thing to be quiet about.
@@ -362,22 +378,21 @@ export async function inferMappings(
         // Bounds the call and every retry under it, so a hung request costs
         // one sheet rather than the whole step. See INFERENCE_TIMEOUT_MS.
         abortSignal: AbortSignal.timeout(INFERENCE_TIMEOUT_MS),
-        // No SDK retry while the latency of a single attempt is unknown.
+        // One retry, restored now that the latency is measured rather than
+        // guessed. It was removed to take that measurement: a retried error
+        // can report neither how long one attempt takes nor what it said, and
+        // three readings of this failure went wrong for exactly that reason.
         //
-        // Three readings of this failure have now been wrong, and each was
-        // wrong because the error had been through a retry. With one retry
-        // left, every sheet still reported "timed out after 75s" with
-        // `AbortError: Delay was aborted` and no status code anywhere in the
-        // cause chain — so what the abort interrupted was a backoff, and the
-        // attempt *before* it had already consumed ~73 of the 75 seconds. A
-        // retried error cannot tell you how long one attempt takes or what it
-        // said, which are the only two facts that matter here.
+        // The measurement says 8–16 seconds per sheet, so two attempts and the
+        // backoff between them still finish well inside the 75-second cap.
+        // That is what makes the retry affordable, and it is the right trade:
+        // the outage this was all chasing turned out to be transient and
+        // upstream, which is precisely the case a retry absorbs.
         //
-        // So: one attempt, its duration logged either way. A transient 429 is
-        // worth absorbing but not at the price of never learning this, and the
-        // retry goes back once the latency is known and the cap is sized from
-        // it rather than guessed.
-        maxRetries: 0,
+        // Not the SDK's default two: the cap governs total time either way, and
+        // a third attempt buys little while adding backoff for an abort to
+        // land in — which is what made the failure unreadable the first time.
+        maxRetries: 1,
       });
 
       // Definitions first, and outside the isData gate. The sheet that states
