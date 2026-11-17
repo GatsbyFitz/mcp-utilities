@@ -57,6 +57,8 @@ export interface AerResult {
   /** The national rows alone, and the rest alone. See `scopeTotals`. */
   nationalValue: number | null;
   subNationalValue: number | null;
+  /** Rows whose jurisdiction is null — a third scope, not a sub-national one. */
+  unknownValue: number | null;
   /** True when the match set holds both, so `totalValue` is null. */
   scopesMixed: boolean;
   truncated: boolean;
@@ -88,6 +90,8 @@ interface Row {
   national_count: string | number;
   national_value: string | number | null;
   sub_national_value: string | number | null;
+  unknown_count: string | number;
+  unknown_value: string | number | null;
   latest_period: string | null;
 }
 
@@ -181,8 +185,15 @@ export async function queryAer(filters: AerFilters): Promise<AerResult> {
            -- scopeTotals decides what to do with these; see its comment.
            COUNT(*)   FILTER (WHERE jurisdiction = ${NATIONAL}::text) OVER () AS national_count,
            SUM(value) FILTER (WHERE jurisdiction = ${NATIONAL}::text) OVER () AS national_value,
-           SUM(value) FILTER (WHERE jurisdiction IS DISTINCT FROM ${NATIONAL}::text)
-             OVER () AS sub_national_value,
+           -- Three scopes, not two. A null jurisdiction is neither national
+           -- nor a state: it is a row whose scope was not read, and it must
+           -- not be folded into the sub-national sum, because on some sheets
+           -- the national block is exactly what lands there.
+           COUNT(*)   FILTER (WHERE jurisdiction IS NULL) OVER () AS unknown_count,
+           SUM(value) FILTER (WHERE jurisdiction IS NULL) OVER () AS unknown_value,
+           SUM(value) FILTER (
+             WHERE jurisdiction IS NOT NULL AND jurisdiction <> ${NATIONAL}::text
+           ) OVER () AS sub_national_value,
            MAX(period_label) OVER () AS latest_period
     FROM aer_performance
     WHERE (${schedule}::smallint IS NULL OR schedule = ${schedule}::smallint)
@@ -207,9 +218,11 @@ export async function queryAer(filters: AerFilters): Promise<AerResult> {
     ...scopeTotals({
       totalCount,
       nationalCount: rows[0] ? Number(rows[0].national_count) : 0,
+      unknownCount: rows[0] ? Number(rows[0].unknown_count) : 0,
       totalValue: num(rows[0]?.total_value),
       nationalValue: num(rows[0]?.national_value),
       subNationalValue: num(rows[0]?.sub_national_value),
+      unknownValue: num(rows[0]?.unknown_value),
     }),
     truncated: totalCount > rows.length,
     latestPeriod: rows[0]?.latest_period ?? null,

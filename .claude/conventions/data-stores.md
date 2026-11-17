@@ -88,6 +88,21 @@ So `extractRows` attributes every row to the block it sits in, classifying each 
 
 Two things earn it the exception. **It is not an aggregate for a ratio** — AGL's national residential market share is 0.2189 while its four jurisdiction shares sum to 1.008, and a ratio cannot be rebuilt from the parts without the weights, so refusing the national row would destroy every national percentage series with no way back. And **some sheets carry a national block and nothing else** (`Lrg Gas Cust#s & Mkt Contr`), where it is the only row there is. Against that, the alternative is the one already tried: a null jurisdiction, which is what let eight blocks share a key.
 
+**A null jurisdiction is a third scope, not a kind of sub-national.** Found on the first Schedule 3 ingest, and it is the same error wearing different clothes. That workbook's sheets put the national block first *without* a label `blockLabelKind` recognises, so its rows store a null jurisdiction while the blocks below them store real codes. Counted as sub-national, the national figure became part of the sum it is the total of:
+
+```
+AGL residential disconnections, 2023-24 Q4
+  null  1320   Disconnections Resi!F8      <- the national row
+  NSW    740   Disconnections Resi!F76
+  SA     412   Disconnections Resi!F165
+  QLD    168   Disconnections Resi!F122
+                740 + 412 + 168 = 1320
+```
+
+The tool reported `total=2640, mixed=false` — exactly double, as one confident number, with the split that exists to prevent this never firing. So `scopeTotals` counts three scopes and refuses a single total whenever more than one is present. The test is "more than one scope" rather than "national and sub-national", because an unlabelled row *can be either*, and a row that might be the total of the others cannot be added to them; refusing is the only answer that is right whichever it turns out to be. The unknown half is reported under its own name, so a reader sees it was counted as neither.
+
+Note the direction, which is the dangerous one: Schedule 2 reads correctly because its first block says "National" and lands in the national scope. Nothing in the data distinguished the two cases — only the label did, and it was the *absence* of a label that broke it.
+
 So the cost is exact rather than hypothetical — a sum over both scopes returns *precisely* double, 3,037,654 for that quarter. `scopeTotals` in [lib/aerPerformance.ts](../../lib/aerPerformance.ts) is where it is paid: `queryAer` splits the same window pass by scope and reports **no single total** when both are present, giving both halves and the reason instead. Note the direction: every other failure described here reads low and shows as a gap, while this one reads high and shows as nothing at all. It is pure, so `pnpm verify:aer` pins it without a database.
 
 The block structure is recorded from real workbooks in [scripts/fixtures/aer-sheet-blocks.json](../../scripts/fixtures/aer-sheet-blocks.json) and asserted by `pnpm verify:aer-blocks`. That fixture exists because the previous one stopped at row 30 and column 40: it passed every assertion while hiding both the jurisdiction blocks (first header at row 76) and the annual columns (which start past column 40). **A fixture that is smaller than the shape it stands for proves the parser handles the fixture.**

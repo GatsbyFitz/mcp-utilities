@@ -777,17 +777,21 @@ console.log("The annual block to the right of the quarterly one:");
 {
   console.log("\nscope totals");
 
+  const call = (over) =>
+    scopeTotals({
+      totalCount: 0, nationalCount: 0, unknownCount: 0,
+      totalValue: null, nationalValue: null, subNationalValue: null, unknownValue: null,
+      ...over,
+    });
+
   // AGL's national residential electricity count for 2022-23 Q4 beside its
   // jurisdiction blocks, as stored from the real workbook: 1,518,827 at B8,
   // and 809,019 + 402,908 + 306,896 + 4 across B101/B159/B217/B79 — the same
   // figure again, which is why the naive total is 3,037,654 and why it is
   // exactly twice the truth rather than merely somewhat high.
-  const mixed = scopeTotals({
-    totalCount: 6,
-    nationalCount: 1,
-    totalValue: 3_037_654,
-    nationalValue: 1_518_827,
-    subNationalValue: 1_518_827,
+  const mixed = call({
+    totalCount: 6, nationalCount: 1,
+    totalValue: 3_037_654, nationalValue: 1_518_827, subNationalValue: 1_518_827,
   });
   check("a match set mixing National with jurisdictions gives no single total",
     mixed.totalValue === null, JSON.stringify(mixed));
@@ -799,12 +803,8 @@ console.log("The annual block to the right of the quarterly one:");
   check("and the mix is flagged, not left to be inferred from a null",
     mixed.scopesMixed === true, JSON.stringify(mixed));
 
-  const nationalOnly = scopeTotals({
-    totalCount: 1,
-    nationalCount: 1,
-    totalValue: 1_518_827,
-    nationalValue: 1_518_827,
-    subNationalValue: null,
+  const nationalOnly = call({
+    totalCount: 1, nationalCount: 1, totalValue: 1_518_827, nationalValue: 1_518_827,
   });
   check("National on its own does total",
     nationalOnly.totalValue === 1_518_827 && nationalOnly.scopesMixed === false,
@@ -812,12 +812,8 @@ console.log("The annual block to the right of the quarterly one:");
   check("and does not claim a jurisdiction figure it has no rows for",
     nationalOnly.subNationalValue === null, JSON.stringify(nationalOnly));
 
-  const statesOnly = scopeTotals({
-    totalCount: 5,
-    nationalCount: 0,
-    totalValue: 1_518_827,
-    nationalValue: null,
-    subNationalValue: 1_518_827,
+  const statesOnly = call({
+    totalCount: 5, totalValue: 1_518_827, subNationalValue: 1_518_827,
   });
   check("jurisdictions on their own do total",
     statesOnly.totalValue === 1_518_827 && statesOnly.scopesMixed === false,
@@ -827,11 +823,83 @@ console.log("The annual block to the right of the quarterly one:");
 
   // "Nothing matched" must stay distinguishable from "a total would mislead":
   // one is zero, the other is null, and the tool renders them differently.
-  const empty = scopeTotals({
-    totalCount: 0, nationalCount: 0, totalValue: null, nationalValue: null, subNationalValue: null,
-  });
+  const empty = call({});
   check("an empty match set totals zero rather than null",
     empty.totalValue === 0 && empty.scopesMixed === false, JSON.stringify(empty));
+}
+
+// ---------------------------------------------------------------------------
+// A row with no jurisdiction is a third scope, not a sub-national one
+// ---------------------------------------------------------------------------
+// Observed on the first Schedule 3 ingest. That workbook's sheets put the
+// national block first *without* a label the classifier recognises, so its
+// rows store a null jurisdiction while the blocks below them store real
+// codes. Folding those nulls into the sub-national sum made the national
+// figure a part of the sum it is the total of:
+//
+//   AGL residential disconnections, 2023-24 Q4
+//     null   1320   Disconnections Resi!F8      <- the national row
+//     NSW     740   Disconnections Resi!F76
+//     SA      412   Disconnections Resi!F165
+//     QLD     168   Disconnections Resi!F122
+//                   740 + 412 + 168 = 1320
+//
+// The tool reported `total=2640, mixed=false`: exactly double, as one
+// confident number, with the scope split never firing. A null jurisdiction
+// can be either scope, so a row that might be the total of the others cannot
+// be added to them — refusing is the only answer that is right either way.
+{
+  console.log("\na row with no jurisdiction");
+
+  const call = (over) =>
+    scopeTotals({
+      totalCount: 0, nationalCount: 0, unknownCount: 0,
+      totalValue: null, nationalValue: null, subNationalValue: null, unknownValue: null,
+      ...over,
+    });
+
+  const real = call({
+    totalCount: 4, unknownCount: 1,
+    totalValue: 2640, subNationalValue: 1320, unknownValue: 1320,
+  });
+  check("an unlabelled row beside jurisdiction rows gives no single total",
+    real.totalValue === null, JSON.stringify(real));
+  check("the doubled figure is nowhere in the result",
+    !Object.values(real).includes(2640), JSON.stringify(real));
+  check("and it is reported under its own name, not as a jurisdiction figure",
+    real.unknownValue === 1320 && real.subNationalValue === 1320,
+    JSON.stringify(real));
+  check("the mix is flagged",
+    real.scopesMixed === true, JSON.stringify(real));
+
+  // All three at once is still just "more than one scope".
+  const three = call({
+    totalCount: 7, nationalCount: 1, unknownCount: 2,
+    totalValue: 900, nationalValue: 100, subNationalValue: 500, unknownValue: 300,
+  });
+  check("all three scopes together also refuse a single total",
+    three.totalValue === null && three.scopesMixed === true, JSON.stringify(three));
+  check("and each is given separately",
+    three.nationalValue === 100 && three.subNationalValue === 500 && three.unknownValue === 300,
+    JSON.stringify(three));
+
+  // Unknown alone is a coherent set: nothing to double-count against.
+  const unknownOnly = call({
+    totalCount: 3, unknownCount: 3, totalValue: 1320, unknownValue: 1320,
+  });
+  check("rows with no jurisdiction, on their own, do total",
+    unknownOnly.totalValue === 1320 && unknownOnly.scopesMixed === false,
+    JSON.stringify(unknownOnly));
+  check("and claim neither a national nor a jurisdiction figure",
+    unknownOnly.nationalValue === null && unknownOnly.subNationalValue === null,
+    JSON.stringify(unknownOnly));
+
+  // The regression that motivated this: before, unknown counted as
+  // sub-national, so one national row plus three states looked coherent.
+  check("an unlabelled row is never counted as sub-national",
+    call({ totalCount: 1, unknownCount: 1, totalValue: 50, unknownValue: 50 })
+      .subNationalValue === null,
+    JSON.stringify(call({ totalCount: 1, unknownCount: 1, totalValue: 50, unknownValue: 50 })));
 }
 
 console.log(failures === 0 ? "\nAll AER parsing checks passed." : `\n${failures} check(s) failed.`);

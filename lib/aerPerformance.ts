@@ -308,27 +308,54 @@ export interface ScopeTotals {
   nationalValue: number | null;
   /** The matched per-jurisdiction rows alone. Null when none matched. */
   subNationalValue: number | null;
-  /** True when both halves matched, which is when `totalValue` is null. */
+  /**
+   * Rows whose jurisdiction is null — neither national nor a state.
+   *
+   * A third scope rather than a kind of sub-national, because it is not one.
+   * On a Schedule 3 sheet the national block's label is not recognised, so its
+   * rows store a null jurisdiction while the blocks below them store real
+   * codes. Counting those nulls as sub-national made the national figure a
+   * part of the sum it is the total of: AGL's residential disconnections for
+   * 2023-24 Q4 read `total=2640, mixed=false` where the truth is 1,320, since
+   * 740 NSW + 412 SA + 168 QLD is exactly the 1,320 at `Disconnections
+   * Resi!F8`. Precisely double, reported as a single confident number, which
+   * is the error this split exists to refuse.
+   */
+  unknownValue: number | null;
+  /** True when more than one scope matched, which is when `totalValue` is null. */
   scopesMixed: boolean;
 }
 
 export function scopeTotals(counts: {
   totalCount: number;
   nationalCount: number;
+  unknownCount: number;
   totalValue: number | null;
   nationalValue: number | null;
   subNationalValue: number | null;
+  unknownValue: number | null;
 }): ScopeTotals {
-  const { totalCount, nationalCount } = counts;
+  const { totalCount, nationalCount, unknownCount } = counts;
   const hasNational = nationalCount > 0;
-  const hasSubNational = nationalCount < totalCount;
-  const scopesMixed = hasNational && hasSubNational;
+  const hasUnknown = unknownCount > 0;
+  const hasSubNational = nationalCount + unknownCount < totalCount;
+
+  // Any two of the three and there is no single total to give. The test is
+  // "more than one scope" rather than "national and sub-national", because an
+  // unknown jurisdiction can be either — it is a row whose scope was not
+  // read, and a row that might be the total of the others cannot be added to
+  // them. Refusing is the only answer that is right whichever it turns out
+  // to be, and the alternative is a number that is silently double.
+  const present = [hasNational, hasSubNational, hasUnknown].filter(Boolean).length;
+  const scopesMixed = present > 1;
+
   return {
     // Zero rather than null on an empty match set: no rows is a total of
     // nothing, which is a different statement from "a total would mislead".
     totalValue: scopesMixed ? null : counts.totalValue ?? 0,
     nationalValue: hasNational ? counts.nationalValue ?? 0 : null,
     subNationalValue: hasSubNational ? counts.subNationalValue ?? 0 : null,
+    unknownValue: hasUnknown ? counts.unknownValue ?? 0 : null,
     scopesMixed,
   };
 }
